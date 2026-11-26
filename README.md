@@ -78,10 +78,18 @@ python3 tests/logic_check.py
 внутри циклов, фактическое число печатает сам тест в строке `checks=…`):
 
 ```powershell
-& 'C:\Users\saaho\Desktop\Godot.exe' --path . -- --autotest
+# первый раз — импорт ресурсов (создаёт кэш .godot/, нужен один раз)
+& 'C:\Godot\Godot_v4.7.2-stable_win64_console.exe' --headless --import --path .
+
+# затем автотест; тест сам закрывает процесс, exit code 0 = успех, 1 = провалы
+& 'C:\Godot\Godot_v4.7.2-stable_win64_console.exe' --path . -- --autotest
+$LASTEXITCODE
 ```
 
-Скриншоты сохраняются в `tests/shots/` (19 штук).
+В headless-режиме (`--headless --path . -- --autotest`) все 118 проверок
+работают; скриншоты в этом режиме недоступны и пропускаются.
+Скриншоты при обычном запуске сохраняются в `tests/shots/` (19 штук).
+Подробная инструкция для Windows 11: `docs/TESTING_WINDOWS.md`.
 
 ## Структура
 

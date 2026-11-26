@@ -196,7 +196,36 @@ Window.mode, `finished` у AudioStreamPlayer3D, лямбды в 4.7, Dictionary-
 * Ховер-rect-ы паузы существуют и покрывают свои центры; клик по подсвеченному
   пункту паузы активирует его.
 
-## 9. СЛЕДУЮЩИЕ ЗАДАЧИ (бэклог)
+## 9. ПОЛУЧЕНИЕ GODOT 4.7.2 ДЛЯ ПРОВЕРОК (третья сессия)
+
+Release-CDN GitHub (release-assets.githubusercontent.com) в песочнице заблокирован
+— готовый бинарник скачать нельзя. Официальный путь, который работает:
+**сборка из исходников godotengine/godot, тег 4.7.2-stable** (тарбол через
+codeload.github.com — разрешённый хост, 72 МБ).
+
+Конфигурация сборки в песочнице (2 ядра, 3.8 ГБ RAM):
+```
+scons platform=linuxbsd target=editor dev_build=yes vulkan=no opengl3=no \
+  x11=no wayland=no alsa=no pulseaudio=no dbus=no speechd=no udev=no -j2
+```
+* dev_build=yes — без оптимизации (компиляция быстрее и память ниже);
+* без рендера и дисплей-драйверов — как официальные headless-сборки;
+* pkg-config в песочнице отсутствует — подменён заглушкой
+  (/usr/local/bin/pkg-config, «пакет не найден» + валидный --version),
+  что и требуется: все системные библиотеки считаются отключёнными.
+* Результат: editor-бинарник для `--headless --import` и запуска проекта.
+
+Важно про headless: `RenderingServer.frame_post_draw` в headless не приходит —
+тест завис бы на первом скриншоте. В `tests/autotest.gd::_shot` добавлен guard:
+при `DisplayServer.get_name() == "headless"` скриншоты пропускаются
+(на 118 проверок не влияет). В обычном режиме всё как было.
+
+Инструкция для реальной Windows 11 (движок, импорт, автотест, коды выхода,
+фолбэк рендера, чеклист) — `docs/TESTING_WINDOWS.md`. Команда запуска
+`--path . -- --autotest` сверена с реализацией (OS.get_cmdline_user_args,
+exit code 0/1, печать `AUTOTEST checks=118 fails=N`).
+
+## 10. СЛЕДУЮЩИЕ ЗАДАЧИ (бэклог)
 
 1. Локализация EN (файлы строк) — если потребуется.
 2. Геймпад: маппинг actions в project.godot.

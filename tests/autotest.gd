@@ -596,6 +596,10 @@ func _press(code: int, down: bool) -> void:
 	Input.parse_input_event(ev)
 
 func _shot(name: String) -> void:
+	if DisplayServer.get_name() == "headless":
+		# Headless: кадры не рендерятся, frame_post_draw не приходит —
+		# скриншоты недоступны в принципе; все проверки не зависят от них.
+		return
 	await RenderingServer.frame_post_draw
 	var img := g.get_viewport().get_texture().get_image()
 	var dir := DirAccess.open("res://")
