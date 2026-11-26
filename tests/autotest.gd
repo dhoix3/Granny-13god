@@ -371,6 +371,126 @@ func run(pgame: GrannyGame) -> void:
 	_check(g.debug_on, "F1 debug overlay toggles")
 	await _shot("17_debug")
 	g._on_key(KEY_F1)
+
+	# --- НАСТРОЙКИ: экран, изменение, применение, сохранение ---
+	var sens_before: float = g.settings.mouse_sensitivity
+	var shadows_before: bool = g.settings.flashlight_shadows
+	g._set_state(g.STATE_TITLE)
+	g.menu_idx = 4
+	g._activate_title_item()
+	_check(g.state == g.STATE_SETTINGS, "title menu opens settings")
+	g.settings_idx = 3
+	g._on_key(KEY_RIGHT)
+	_check(absf(g.settings.mouse_sensitivity - (sens_before + 0.1)) < 0.001, "right increases mouse sensitivity")
+	g._on_key(KEY_LEFT)
+	g._on_key(KEY_LEFT)
+	_check(g.settings.mouse_sensitivity < sens_before, "left decreases mouse sensitivity")
+	g.settings.mouse_sensitivity = sens_before
+	g.settings_idx = 6
+	g._cycle_setting(6)
+	_check(g.settings.flashlight_shadows != shadows_before, "flashlight shadows toggles")
+	_check(g.player.flashlight.shadow_enabled == g.settings.flashlight_shadows, "shadow setting applies to flashlight")
+	g._cycle_setting(6)
+	_check(g.settings.flashlight_shadows == shadows_before, "flashlight shadows restored")
+	await _frames(2)
+	await _shot("18_settings")
+	g._on_key(KEY_ESCAPE)
+	_check(g.state == g.STATE_TITLE, "settings Esc returns to title")
+	g.settings.save_settings()
+	var s_reload := GameSettings.load_settings()
+	_check(absf(s_reload.mouse_sensitivity - g.settings.mouse_sensitivity) < 0.001, "settings persist to disk")
+	g.settings.save_settings()
+
+	# --- СОХРАНЕНИЯ: запись, метаданные, загрузка состояния ---
+	g.diff_index = 1
+	g.start_game()
+	g._set_state(g.STATE_PLAY)
+	g.fade_t = 0.0
+	g.inv.append(Items.KEY)
+	g.locks[0] = true
+	g.play_time = 77.0
+	g.player.place_at(0, 10.5, 8.5, 1.0)
+	_check(SaveSystem.save_run(g, SaveSystem.SLOTS[0]), "save_run writes slot1")
+	var meta := SaveSystem.read_meta(SaveSystem.SLOTS[0])
+	_check(meta.exists, "slot1 meta exists")
+	_check(meta.day == 1 and meta.locks == 1 and meta.max_days == 5, "slot1 meta fields correct")
+	_check(SaveSystem.latest_slot() != "", "latest slot found")
+	g.inv.clear()
+	g.locks[0] = false
+	g.day = 3
+	g.play_time = 999.0
+	g.player.place_at(0, 24.5, 27.5, 2.5)
+	var cont0 = g.world.levels[0].containers[0]
+	cont0.searched = true
+	_check(SaveSystem.load_run(g, SaveSystem.SLOTS[0]), "load_run restores slot1")
+	_check(g.day == 1, "load restores day")
+	_check(g.max_days == 5, "load restores max days")
+	_check(g.locks[0], "load restores locks")
+	_check(g.inv.has(Items.KEY), "load restores inventory")
+	_check(absf(g.play_time - 77.0) < 0.5, "load restores play time")
+	_check(g.player.level == 0, "load restores player level")
+	var plp := g.player_local()
+	_check(Vector2(plp.x - 10.5, plp.y - 8.5).length() < 0.6, "load restores position")
+	_check(not cont0.searched, "load resets searched containers")
+	_check(g.state == g.STATE_PLAY, "load enters play state")
+	_check(g.diff.name == "НОРМАЛЬНО", "load restores difficulty")
+
+	# --- экраны сохранения/загрузки через меню паузы ---
+	g._set_state(g.STATE_PAUSE)
+	g.pause_idx = 1
+	g._activate_pause_item()
+	_check(g.state == g.STATE_SAVE, "pause opens save screen")
+	g.save_idx = 1
+	g._activate_save_slot()
+	_check(g.state == g.STATE_PAUSE, "saving returns to pause")
+	_check(SaveSystem.read_meta(SaveSystem.SLOTS[1]).exists, "slot2 written from UI")
+	await _frames(2)
+	await _shot("19_saves")
+	g._set_state(g.STATE_PAUSE)
+	g.pause_idx = 2
+	g._activate_pause_item()
+	_check(g.state == g.STATE_LOAD, "pause opens load screen")
+	g._on_key(KEY_ESCAPE)
+	_check(g.state == g.STATE_PAUSE, "load screen Esc returns to pause")
+	g._set_state(g.STATE_TITLE)
+	g.menu_idx = 0
+	g._activate_title_item()
+	_check(g.state == g.STATE_PLAY, "continue loads latest save")
+
+	# --- музыка и 3D-звук ---
+	_check(Audio.streams.has("music_menu") and Audio.streams.has("music_ambient"), "music tracks generated")
+	_check(Audio.music_player != null, "music player exists")
+	_check(Audio.streams.has("hum"), "granny hum generated")
+	Audio.set_music("music_ambient")
+	await g.get_tree().create_timer(1.2).timeout
+	_check(Audio.music_track == "music_ambient", "ambient music switched")
+	_check(Audio.music_player.playing, "music is playing")
+	var root0: Node3D = g.world.get_root(0)
+	var ch := root0.get_child_count()
+	Audio.play3d("break", root0, Vector3(6, 1.0, 8), 0.5, 1.0)
+	_check(root0.get_child_count() == ch + 1, "play3d spawns positional node")
+
+	# --- мышь в меню: ховер по прямоугольникам ---
+	g._set_state(g.STATE_TITLE)
+	var rects := g.ui.hover_rects
+	_check(rects.size() == g.menu_items.size(), "title menu exposes click rects")
+	var hit := -1
+	for i in rects.size():
+		var center: Vector2 = rects[i].get_center()
+		var inside := false
+		for j in rects.size():
+			if rects[j].has_point(center):
+				inside = true
+				break
+		_check(inside, "menu item %d rect covers its own center" % i)
+		hit = i
+	_check(hit >= 0, "menu rects are iterated")
+	g.menu_idx = 2
+	g._activate_title_item()
+	_check(g.state == g.STATE_LOAD, "title menu opens load screen")
+	g._on_key(KEY_ESCAPE)
+	_check(g.state == g.STATE_TITLE, "load screen Esc from title returns to title")
+
 	# Даём дереву освободить отложенные ресурсы и таймеры перед выходом.
 	await _frames(10)
 

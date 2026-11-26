@@ -59,13 +59,13 @@ func feed(g: Node) -> void:
 	fed = true
 	angry = false
 	angry_t = 0.0
-	Audio.play("purr", 0.5, 1.0)
+	Audio.play3d("purr", g.world.get_root(1), Vector3(x, 0.3, y), 0.5, 1.0, 5.0)
 	g.emit_noise(x, y, 2.0, "мурчание")
 	g.push_subtitle("Маруся: муррр...", 2.4, false)
 	update_transform()
 
 func purr_now(_g: Node) -> void:
-	Audio.play("purr", 0.45, 1.0)
+	Audio.play3d("purr", game.world.get_root(1), Vector3(x, 0.3, y), 0.45, 1.0, 5.0)
 
 func alert(g: Node, what: String) -> void:
 	if angry_t > 0.0:
@@ -73,7 +73,7 @@ func alert(g: Node, what: String) -> void:
 	angry = true
 	angry_t = 9.0
 	meow_t = 0.9
-	Audio.play("hiss" if what == "шипение" else "meow", 0.8, 1.0)
+	Audio.play3d("hiss" if what == "шипение" else "meow", g.world.get_root(1), Vector3(x, 0.4, y), 0.85, 1.0, 10.0)
 	g.emit_noise(x, y, 15.0, "мяу")
 	g.attic_alert_t = maxf(g.attic_alert_t, 8.0)
 	g.push_subtitle("Маруся: МЯУ!!!", 2.0, false)
@@ -110,7 +110,7 @@ func update(dt: float, g: Node) -> void:
 	if idle_t <= 0.0:
 		idle_t = 22.0 + randf() * 20.0
 		if d < 9.0:
-			Audio.play("meow", 0.35, 0.85 + randf() * 0.3)
+			Audio.play3d("meow", g.world.get_root(1), Vector3(x, 0.4, y), 0.4, 0.85 + randf() * 0.3, 8.0)
 			g.emit_noise(x, y, 5.5, "мяу")
 	update_transform()
 
