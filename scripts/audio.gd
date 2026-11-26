@@ -47,7 +47,9 @@ func _ensure_buses() -> void:
 	for bus_name in ["Music", "SFX"]:
 		if AudioServer.get_bus_index(bus_name) == -1:
 			AudioServer.add_bus()
-			var idx := AudioServer.get_bus_index(bus_name)
+			# У новой шины ещё нет имени — get_bus_index(name) вернёт -1.
+			# add_bus() добавляет в конец, индекс = bus_count - 1.
+			var idx := AudioServer.bus_count - 1
 			AudioServer.set_bus_name(idx, bus_name)
 			AudioServer.set_bus_send(idx, "Master")
 	_buses_ready = true

@@ -79,20 +79,23 @@ func run(pgame: GrannyGame) -> void:
 	g.player.trap_stuck = 0.0
 
 	# --- закрытая дверь физически не пускает ---
+	# 150 кадров, а не 55: в headless process-кадры идут быстрее physics-тиков
+	# (60 Гц), при 55 кадрах игрок может просто не дойти до двери — проверка
+	# должна зависеть от геометрии, а не от темпа кадров среды.
 	var door0 = lv0.doors[0]
 	door0.open = false
 	g.world.update_doors(1.0)
 	g.player.place_at(0, door0.x + 0.5, door0.y + 2.2, -PI * 0.5)
 	await _frames(2)
 	_press(KEY_W, true)
-	await _frames(55)
+	await _frames(150)
 	_press(KEY_W, false)
 	var blocked := g.player.global_position - lv0.origin
 	_check(blocked.z > 13.5, "closed door blocks the player (z=%.2f)" % blocked.z)
 	door0.open = true
 	g.world.update_doors(1.0)
 	_press(KEY_W, true)
-	await _frames(55)
+	await _frames(150)
 	_press(KEY_W, false)
 	var through := g.player.global_position - lv0.origin
 	_check(through.z < 13.2, "open door lets the player through (z=%.2f)" % through.z)
@@ -459,7 +462,7 @@ func run(pgame: GrannyGame) -> void:
 	_check(g.state == g.STATE_SAVE, "pause opens save screen")
 	await _frames(2)
 	await _shot("19_saves")
-	g.save_idx = 1
+	g.save_idx = 2  # ALL_SLOTS[2] == "slot2"
 	g._activate_save_slot()
 	_check(g.state == g.STATE_PAUSE, "saving returns to pause")
 	_check(SaveSystem.read_meta(SaveSystem.SLOTS[1]).exists, "slot2 written from UI")

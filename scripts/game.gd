@@ -292,10 +292,12 @@ func _input(event: InputEvent) -> void:
 
 func _on_key(k: int) -> void:
 	if k == KEY_F11:
+		# Переключаем настройку детерминированно: чтение win.mode после
+		# присваивания ненадёжно (в headless режим всегда WINDOWED,
+		# на некоторых платформах применяется асинхронно).
+		settings.fullscreen = not settings.fullscreen
 		var win := get_window()
-		var to_full := win.mode != Window.MODE_FULLSCREEN
-		win.mode = Window.MODE_FULLSCREEN if to_full else Window.MODE_WINDOWED
-		settings.fullscreen = to_full
+		win.mode = Window.MODE_FULLSCREEN if settings.fullscreen else Window.MODE_WINDOWED
 		settings.save_settings()
 		return
 	if k == KEY_F1:
