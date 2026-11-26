@@ -293,8 +293,9 @@ func _input(event: InputEvent) -> void:
 func _on_key(k: int) -> void:
 	if k == KEY_F11:
 		var win := get_window()
-		win.mode = Window.MODE_WINDOWED if win.mode == Window.MODE_FULLSCREEN else Window.MODE_FULLSCREEN
-		settings.fullscreen = win.mode == Window.MODE_FULLSCREEN
+		var to_full := win.mode != Window.MODE_FULLSCREEN
+		win.mode = Window.MODE_FULLSCREEN if to_full else Window.MODE_WINDOWED
+		settings.fullscreen = to_full
 		settings.save_settings()
 		return
 	if k == KEY_F1:
@@ -458,6 +459,14 @@ func _menu_click() -> void:
 				_set_state(STATE_PAUSE if diff_return == 1 else STATE_TITLE)
 		STATE_SETTINGS:
 			_click_setting()
+		STATE_PAUSE:
+			if ui.hover_idx >= 0 and ui.hover_idx < pause_items.size():
+				if pause_idx == ui.hover_idx:
+					Audio.play("ui_select", 0.6, 1.0)
+					_activate_pause_item()
+				else:
+					pause_idx = ui.hover_idx
+					Audio.play("ui_move", 0.5, 1.0)
 		STATE_SAVE, STATE_LOAD:
 			if ui.hover_idx >= 0 and ui.hover_idx < SaveSystem.ALL_SLOTS.size():
 				save_idx = ui.hover_idx

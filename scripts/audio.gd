@@ -116,6 +116,8 @@ func set_music(track: String) -> void:
 		_pending_track = ""
 		music_target_fade = 1.0
 		return
+	if music_track == "":
+		music_fade = 0.0  # старт из тишины — плавное появление
 	_pending_track = track
 	_pending_t = 0.8 if music_track != "" else 0.0
 

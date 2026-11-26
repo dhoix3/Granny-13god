@@ -213,6 +213,8 @@ func _draw_title(W: float, H: float) -> void:
 # ------------------------------------------------------------------ difficulty
 
 func _draw_diff(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
 	diff_rects.clear()
 	draw_rect(Rect2(0, 0, W, H), Color(0.012, 0.012, 0.018, 0.98))
 	_shadow_ctext(W * 0.5, 66, "ВЫБЕРИ СЛОЖНОСТЬ", 34, Color(0.93, 0.90, 0.84), 3.0)
@@ -261,6 +263,9 @@ func _diff_bar(x: float, y: float, w: float, label: String, v: float, col: Color
 # ------------------------------------------------------------------ help
 
 func _draw_help(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
+	diff_rects.clear()
 	draw_rect(Rect2(0, 0, W, H), Color(0.008, 0.008, 0.013, 0.98))
 	_shadow_ctext(W * 0.5, 64, "КАК ИГРАТЬ", 36, BONE, 3.0)
 	var keys := [
@@ -292,6 +297,8 @@ func _draw_help(W: float, H: float) -> void:
 # ------------------------------------------------------------------ intro
 
 func _draw_intro(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
 	draw_rect(Rect2(0, 0, W, H), Color(0.006, 0.006, 0.010, 0.98))
 	for i in 7:
 		var t := game.time * 0.04 + i * 1.9
@@ -500,14 +507,19 @@ func _draw_journal(W: float, H: float) -> void:
 # ------------------------------------------------------------------ pause
 
 func _draw_pause(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
 	draw_rect(Rect2(0, 0, W, H), Color(0.008, 0.008, 0.013, 0.92))
 	_shadow_ctext(W * 0.5, 150, "ПАУЗА", 40, BONE, 3.0)
 	var y := 228.0
 	for i in game.pause_items.size():
 		var sel := i == game.pause_idx
 		var rect := Rect2(W * 0.5 - 240, y - 34, 480, 50)
+		hover_rects.append(rect)
 		if sel:
 			_panel(rect, Color(0.42, 0.10, 0.09, 0.42), BLOOD, 2.0)
+		elif hover_idx == i:
+			_panel(rect, Color(0.42, 0.10, 0.09, 0.20), Color(0.74, 0.16, 0.13, 0.35), 1.4)
 		_ctext(W * 0.5, y, game.pause_items[i], 25 if sel else 21, BONE if sel else Color(0.65, 0.62, 0.57))
 		y += 58.0
 	_ctext(W * 0.5, H - 80, "День " + str(game.day) + " из " + str(game.max_days) + "   ·   замки: " + str(game.count_locks()) + "/3", 13, DIM)
@@ -556,7 +568,7 @@ func _draw_settings(W: float, H: float) -> void:
 		var txt_col := Color(0.92, 0.88, 0.80) if sel else Color(0.72, 0.69, 0.63)
 		_text(px + 24, y + 33, label, 18, txt_col)
 		if is_slider:
-			var bar := Rect2(px + pw - 260, y + 21, 230, 12)
+			var bar := Rect2(px + pw - 320, y + 21, 230, 12)
 			slider_rects.append(bar)
 			var frac := 0.5
 			match i:
@@ -565,7 +577,7 @@ func _draw_settings(W: float, H: float) -> void:
 				2: frac = game.settings.sfx_volume
 				3: frac = (game.settings.mouse_sensitivity - 0.2) / 2.3
 			_bar(bar.position.x, bar.position.y, bar.size.x, bar.size.y, frac, AMBER)
-			_text(bar.end.x + 12, y + 33, val, 15, AMBER)
+			_text(bar.end.x + 14, y + 33, val, 15, AMBER)
 		elif val != "":
 			var tw := _tw(val, 16)
 			_panel(Rect2(px + pw - 130 - tw * 0.5 - 14, y + 12, tw + 28, 26), Color(0.05, 0.05, 0.08, 0.8), Color(0.55, 0.50, 0.42, 0.4), 1.0)

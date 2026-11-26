@@ -173,8 +173,8 @@ static func load_run(game: GrannyGame, slot: String) -> bool:
 	game.diff = game.diffs[game.diff_index]
 	game.max_days = maxi(1, int(st.get("max_days", game.diff.days)))
 	game.day = clampi(int(st.get("day", 1)), 1, game.max_days)
-	game.play_time = float(st.get("play_time", 0.0))
-	game.deaths = int(st.get("deaths", 0))
+	game.play_time = maxf(0.0, float(st.get("play_time", 0.0)))
+	game.deaths = maxi(0, int(st.get("deaths", 0)))
 	game.lock4 = bool(st.get("lock4", false))
 	game.car_key_installed = bool(st.get("car_key_installed", false))
 	game.car_battery_installed = bool(st.get("car_battery_installed", false))
@@ -187,7 +187,10 @@ static func load_run(game: GrannyGame, slot: String) -> bool:
 
 	game.inv.clear()
 	for v in st.get("inv", []):
-		game.inv.append(int(v))
+		var id := int(v)
+		# фильтр мусора из повреждённых/руками правленых сейвов
+		if id != Items.NONE and Items.display_name(id) != "":
+			game.inv.append(id)
 	game.noises.clear()
 	game.subs.clear()
 	for t in game.throwns:
@@ -242,26 +245,35 @@ static func load_run(game: GrannyGame, slot: String) -> bool:
 	game.world.set_front_locks(game.count_locks())
 	game.world.update_doors(1.0)
 
-	# Капканы: только вооружённые из сейва
+	# Капканы: только вооружённые из сейва, с проверкой координат и тайла
 	game.world.clear_traps()
 	for tp in st.get("armed_traps", []):
-		var lv: LevelData = game.world.levels[int(tp.lv)]
-		game.world.add_trap(lv, float(tp.x), float(tp.y))
+		var tl: LevelData = game.world.levels[clampi(int(tp.lv), 0, game.world.levels.size() - 1)]
+		var tx := clampf(float(tp.x), 0.5, tl.w - 0.5)
+		var ty := clampf(float(tp.y), 0.5, tl.h - 0.5)
+		var tt := tl.get_tile(int(tx), int(ty))
+		if tt == LevelData.FLOOR or tt == LevelData.RUG:
+			game.world.add_trap(tl, tx, ty)
 
 	# Игрок
 	var ps: Dictionary = st.get("player", {})
 	var p_level := clampi(int(ps.get("level", 0)), 0, game.world.levels.size() - 1)
 	var plv: LevelData = game.world.levels[p_level]
+	var was_hidden := bool(ps.get("hidden", false))
+	var px := clampf(float(ps.get("x", 5.5)), 0.5, plv.w - 0.5)
+	var py := clampf(float(ps.get("y", 10.5)), 0.5, plv.h - 0.5)
 	game.player.reset_state()
 	game.player.dead = false
-	game.player.place_at(p_level, float(ps.get("x", 5.5)), float(ps.get("y", 10.5)), float(ps.get("angle", 0.0)))
+	game.player.place_at(p_level, px, py, float(ps.get("angle", 0.0)))
+	# из повреждённого сейва точка может попасть в стену — вернём на спавн уровня
+	if not was_hidden and plv.solid_at(px, py):
+		game.player.place_at(p_level, plv.spawn_x, plv.spawn_y, plv.spawn_a)
 	game.player.pitch = float(ps.get("pitch", 0.0))
 	game.player.health = clampf(float(ps.get("health", 1.0)), 0.05, 1.0)
 	game.player.stamina = clampf(float(ps.get("stamina", 1.0)), 0.0, 1.0)
 	game.player.battery = clampf(float(ps.get("battery", 1.0)), 0.0, 1.0)
 	game.player.flashlight_on = bool(ps.get("flashlight_on", true))
 	game.player.crouch = bool(ps.get("crouch", false))
-	var was_hidden := bool(ps.get("hidden", false))
 	game.player.hidden = false
 	game.player.hide_spot = null
 	if was_hidden:
@@ -273,8 +285,11 @@ static func load_run(game: GrannyGame, slot: String) -> bool:
 	# Гренни
 	var gs: Dictionary = st.get("granny", {})
 	var g_level := clampi(int(gs.get("level", 0)), 0, 1)
-	game.granny.spawn(game.world.levels[g_level], float(gs.get("x", 24.5)), float(gs.get("y", 27.5)), float(gs.get("angle", 0.0)))
-	game.granny.trap_t = float(gs.get("trap_t", 12.0))
+	var glv: LevelData = game.world.levels[g_level]
+	var gx := clampf(float(gs.get("x", 24.5)), 0.5, glv.w - 0.5)
+	var gy := clampf(float(gs.get("y", 27.5)), 0.5, glv.h - 0.5)
+	game.granny.spawn(glv, gx, gy, float(gs.get("angle", 0.0)))
+	game.granny.trap_t = maxf(2.0, float(gs.get("trap_t", 12.0)))
 	game.granny.state = GrannyAI.PATROL
 	game.granny.line = ""
 	game.granny.line_t = 0.0

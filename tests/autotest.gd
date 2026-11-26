@@ -401,6 +401,23 @@ func run(pgame: GrannyGame) -> void:
 	_check(absf(s_reload.mouse_sensitivity - g.settings.mouse_sensitivity) < 0.001, "settings persist to disk")
 	g.settings.save_settings()
 
+	# --- проводка настроек в игру ---
+	g.settings.invert_y = true
+	_check(g.invert_look(), "invert_y reaches player look")
+	g.settings.invert_y = false
+	_check(not g.invert_look(), "invert_y off")
+	g.settings.mouse_sensitivity = 2.0
+	_check(absf(g.look_scale() - 2.0) < 0.001, "sensitivity reaches look scale")
+	g.settings.mouse_sensitivity = sens_before
+
+	# --- F11 синхронизирует настройку полного экрана ---
+	var fs_before := g.settings.fullscreen
+	g._on_key(KEY_F11)
+	_check(g.settings.fullscreen != fs_before, "F11 toggles fullscreen setting")
+	g._on_key(KEY_F11)
+	_check(g.settings.fullscreen == fs_before, "F11 toggles fullscreen back")
+	g.settings.save_settings()
+
 	# --- СОХРАНЕНИЯ: запись, метаданные, загрузка состояния ---
 	g.diff_index = 1
 	g.start_game()
@@ -440,12 +457,12 @@ func run(pgame: GrannyGame) -> void:
 	g.pause_idx = 1
 	g._activate_pause_item()
 	_check(g.state == g.STATE_SAVE, "pause opens save screen")
+	await _frames(2)
+	await _shot("19_saves")
 	g.save_idx = 1
 	g._activate_save_slot()
 	_check(g.state == g.STATE_PAUSE, "saving returns to pause")
 	_check(SaveSystem.read_meta(SaveSystem.SLOTS[1]).exists, "slot2 written from UI")
-	await _frames(2)
-	await _shot("19_saves")
 	g._set_state(g.STATE_PAUSE)
 	g.pause_idx = 2
 	g._activate_pause_item()
@@ -472,24 +489,93 @@ func run(pgame: GrannyGame) -> void:
 
 	# --- мышь в меню: ховер по прямоугольникам ---
 	g._set_state(g.STATE_TITLE)
+	await _frames(2)  # даём _draw_title перестроить прямоугольники кликов
 	var rects := g.ui.hover_rects
 	_check(rects.size() == g.menu_items.size(), "title menu exposes click rects")
-	var hit := -1
+	var all_cover := true
 	for i in rects.size():
 		var center: Vector2 = rects[i].get_center()
-		var inside := false
+		var covered := false
 		for j in rects.size():
 			if rects[j].has_point(center):
-				inside = true
+				covered = true
 				break
-		_check(inside, "menu item %d rect covers its own center" % i)
-		hit = i
-	_check(hit >= 0, "menu rects are iterated")
+		if not covered:
+			all_cover = false
+	_check(all_cover, "every menu rect covers its own center")
 	g.menu_idx = 2
 	g._activate_title_item()
 	_check(g.state == g.STATE_LOAD, "title menu opens load screen")
 	g._on_key(KEY_ESCAPE)
 	_check(g.state == g.STATE_TITLE, "load screen Esc from title returns to title")
+
+	# --- мышь в паузе: ховер-прямоугольники строятся для паузы ---
+	g._set_state(g.STATE_PAUSE)
+	await _frames(2)
+	var prects := g.ui.hover_rects
+	_check(prects.size() == g.pause_items.size(), "pause menu exposes click rects")
+	var pause_cover := true
+	for i in prects.size():
+		var pc: Vector2 = prects[i].get_center()
+		if not prects[i].has_point(pc):
+			pause_cover = false
+	_check(pause_cover, "pause rects cover their centers")
+	# клик по подсвеченному пункту активирует его
+	g.pause_idx = 0
+	g.ui.hover_idx = 0
+	g._menu_click()
+	_check(g.state == g.STATE_PLAY, "clicking highlighted pause item resumes")
+	g._set_state(g.STATE_PAUSE)
+	await _frames(2)
+
+	# --- повреждённые и отсутствующие сейвы ---
+	g._set_state(g.STATE_PLAY)
+	g.fade_t = 0.0
+	var udir := DirAccess.open("user://")
+	udir.make_dir_recursive("saves")
+	var fw := FileAccess.open("user://saves/slot3.json", FileAccess.WRITE)
+	fw.store_string("{это не json!!!")
+	fw.close()
+	var bad_meta := SaveSystem.read_meta(SaveSystem.SLOTS[2])
+	_check(not bad_meta.exists, "corrupted json reports missing meta")
+	_check(not SaveSystem.load_run(g, SaveSystem.SLOTS[2]), "corrupted json refuses to load")
+	fw = FileAccess.open("user://saves/slot3.json", FileAccess.WRITE)
+	fw.store_string("{\"meta\": {\"day\": 2}}")
+	fw.close()
+	_check(not SaveSystem.load_run(g, SaveSystem.SLOTS[2]), "json without state refuses to load")
+	_check(g.state == g.STATE_PLAY, "failed load keeps play state")
+	var m_missing := SaveSystem.read_meta("no_such_slot")
+	_check(not m_missing.exists, "missing slot reports missing")
+	_check(not SaveSystem.load_run(g, "no_such_slot"), "missing slot refuses to load")
+	# семантический мусор в валидном json: клампы и фильтры
+	fw = FileAccess.open("user://saves/slot3.json", FileAccess.WRITE)
+	fw.store_string(JSON.stringify({
+		"meta": {},
+		"state": {
+			"diff_index": 99, "day": 999, "max_days": 0, "deaths": -5, "play_time": -12.0,
+			"player": {"level": 55, "x": -12345.0, "y": -9999.0},
+			"inv": [0, 3, 99, "бред"],
+			"armed_traps": [{"lv": 31, "x": -50.0, "y": -50.0}],
+		},
+	}))
+	fw.close()
+	_check(SaveSystem.load_run(g, SaveSystem.SLOTS[2]), "garbage-but-valid save loads")
+	_check(g.diff_index >= 0 and g.diff_index < g.diffs.size(), "diff index clamped")
+	_check(g.max_days >= 1, "max days clamped positive")
+	_check(g.day >= 1 and g.day <= g.max_days, "day clamped into range")
+	_check(g.deaths >= 0, "deaths clamped non-negative")
+	_check(g.play_time >= 0.0, "play time clamped non-negative")
+	_check(g.player.level >= 0 and g.player.level < g.world.levels.size(), "player level clamped")
+	var glv2: LevelData = g.world.levels[g.player.level]
+	var pp2: Vector3 = g.player.global_position - glv2.origin
+	_check(pp2.x >= 0.0 and pp2.x <= glv2.w and pp2.z >= 0.0 and pp2.z <= glv2.h, "player position clamped into level")
+	_check(not glv2.solid_at(pp2.x, pp2.z), "player not stuck inside a wall")
+	var inv_ok := g.inv.size() == 1 and g.inv[0] == Items.NOTE
+	_check(inv_ok, "invalid inventory ids filtered out")
+	var trap_total := 0
+	for lvx in g.world.levels:
+		trap_total += lvx.traps.size()
+	_check(trap_total == 0, "garbage trap coords filtered out")
 
 	# Даём дереву освободить отложенные ресурсы и таймеры перед выходом.
 	await _frames(10)
