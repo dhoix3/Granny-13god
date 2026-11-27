@@ -90,7 +90,7 @@ func _uv_scale(mat_name: String) -> float:
 		"concrete": return 0.50
 	return 0.0
 
-func _quad(st: SurfaceTool, p0: Vector3, u: Vector3, v: Vector3, n: Vector3, uv_scale := 0.0) -> void:
+func _quad(st: SurfaceTool, p0: Vector3, u: Vector3, v: Vector3, n: Vector3, uv_scale := 0.0, ao: Array = [1.0, 1.0, 1.0, 1.0]) -> void:
 	var p1 := p0 + v
 	var p2 := p0 + u + v
 	var p3 := p0 + u
@@ -103,24 +103,53 @@ func _quad(st: SurfaceTool, p0: Vector3, u: Vector3, v: Vector3, n: Vector3, uv_
 		uv1 = _world_uv(p1, n, uv_scale)
 		uv2 = _world_uv(p2, n, uv_scale)
 		uv3 = _world_uv(p3, n, uv_scale)
+	# Вершины: p0, p1 (низ), p2 (верх), p3 (низ) — AO запечена в цвет.
+	_set_ao(st, ao[0])
 	st.set_normal(n)
 	st.set_uv(uv0)
 	st.add_vertex(p0)
+	_set_ao(st, ao[1])
 	st.set_normal(n)
 	st.set_uv(uv1)
 	st.add_vertex(p1)
+	_set_ao(st, ao[2])
 	st.set_normal(n)
 	st.set_uv(uv2)
 	st.add_vertex(p2)
+	_set_ao(st, ao[0])
 	st.set_normal(n)
 	st.set_uv(uv0)
 	st.add_vertex(p0)
+	_set_ao(st, ao[2])
 	st.set_normal(n)
 	st.set_uv(uv2)
 	st.add_vertex(p2)
+	_set_ao(st, ao[3])
 	st.set_normal(n)
 	st.set_uv(uv3)
 	st.add_vertex(p3)
+
+func _set_ao(st: SurfaceTool, v: float) -> void:
+	v = clampf(float(v), 0.35, 1.0)
+	st.set_color(Color(v, v, v))
+
+# AO угла пола/потолка: темнее, если соседние плитки — стены.
+# corner: 0..1 по каждой оси (какой угол плитки).
+func _corner_ao(lv: LevelData, x: int, y: int, cx: int, cy: int, k: float) -> float:
+	var cnt := 0
+	for d in [Vector2i(cx - 1, cy - 1), Vector2i(cx - 1, cy), Vector2i(cx, cy - 1)]:
+		var t := lv.get_tile(x + d.x, y + d.y)
+		if LevelData.SOLID[t]:
+			cnt += 1
+	return 1.0 - k * float(cnt)
+
+func _floor_ao(lv: LevelData, x: int, y: int, k: float) -> Array:
+	return [
+		_corner_ao(lv, x, y, 0, 0, k),
+		_corner_ao(lv, x, y, 1, 0, k),
+		_corner_ao(lv, x, y, 1, 1, k),
+		_corner_ao(lv, x, y, 0, 1, k),
+	]
 
 func _tile_mat(t: int) -> String:
 	match t:
@@ -168,26 +197,28 @@ func _build_shell(lv: LevelData, root: Node3D) -> void:
 				else:
 					var fmat := _floor_name(t, lv.id)
 					var fs := _st(fmat)
-					_quad(fs, Vector3(x, 0.0, y), Vector3(0, 0, 1), Vector3(1, 0, 0), Vector3.UP, _uv_scale(fmat))
+					_quad(fs, Vector3(x, 0.0, y), Vector3(0, 0, 1), Vector3(1, 0, 0), Vector3.UP, _uv_scale(fmat), _floor_ao(lv, x, y, 0.12))
 				# ceiling
 				var cs := _st("ceiling")
-				_quad(cs, Vector3(x, WALL_H, y), Vector3(0, 0, 1), Vector3(1, 0, 0), Vector3.DOWN, _uv_scale("ceiling"))
+				_quad(cs, Vector3(x, WALL_H, y), Vector3(0, 0, 1), Vector3(1, 0, 0), Vector3.DOWN, _uv_scale("ceiling"), _floor_ao(lv, x, y, 0.10))
 			if LevelData.SOLID[t] and not opening:
 				var mat := _tile_mat(t)
 				var st := _st(mat)
+				# стены: тёмнее у пола (контактная тень), светлее у потолка
+				var wall_ao := [0.70, 0.85, 0.85, 0.70]
 				# north
 				var us := _uv_scale(mat)
 				if not LevelData.SOLID[lv.get_tile(x, y - 1)] or _is_opening(lv.get_tile(x, y - 1)):
-					_quad(st, Vector3(x + 1, 0, y), Vector3(-1, 0, 0), Vector3(0, WALL_H, 0), Vector3(0, 0, -1), us)
+					_quad(st, Vector3(x + 1, 0, y), Vector3(-1, 0, 0), Vector3(0, WALL_H, 0), Vector3(0, 0, -1), us, wall_ao)
 				# south
 				if not LevelData.SOLID[lv.get_tile(x, y + 1)] or _is_opening(lv.get_tile(x, y + 1)):
-					_quad(st, Vector3(x, 0, y + 1), Vector3(1, 0, 0), Vector3(0, WALL_H, 0), Vector3(0, 0, 1), us)
+					_quad(st, Vector3(x, 0, y + 1), Vector3(1, 0, 0), Vector3(0, WALL_H, 0), Vector3(0, 0, 1), us, wall_ao)
 				# west
 				if not LevelData.SOLID[lv.get_tile(x - 1, y)] or _is_opening(lv.get_tile(x - 1, y)):
-					_quad(st, Vector3(x, 0, y), Vector3(0, 0, 1), Vector3(0, WALL_H, 0), Vector3(-1, 0, 0), us)
+					_quad(st, Vector3(x, 0, y), Vector3(0, 0, 1), Vector3(0, WALL_H, 0), Vector3(-1, 0, 0), us, wall_ao)
 				# east
 				if not LevelData.SOLID[lv.get_tile(x + 1, y)] or _is_opening(lv.get_tile(x + 1, y)):
-					_quad(st, Vector3(x + 1, 0, y + 1), Vector3(0, 0, -1), Vector3(0, WALL_H, 0), Vector3(1, 0, 0), us)
+					_quad(st, Vector3(x + 1, 0, y + 1), Vector3(0, 0, -1), Vector3(0, WALL_H, 0), Vector3(1, 0, 0), us, wall_ao)
 				# collision
 				var cs2 := CollisionShape3D.new()
 				cs2.shape = _box_shape
@@ -649,7 +680,8 @@ func _build_lamps(lv: LevelData, root: Node3D) -> void:
 		light.light_energy = 2.0
 		light.omni_range = 8.0
 		light.omni_attenuation = 1.15
-		light.shadow_enabled = false
+		light.shadow_enabled = Mats.quality() >= 2
+		light.shadow_bias = 0.04
 		root.add_child(light)
 
 func make_trap_node(lv: LevelData, trap: LevelData.Trap) -> Node3D:

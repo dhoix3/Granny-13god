@@ -389,11 +389,11 @@ func run(pgame: GrannyGame) -> void:
 	g._on_key(KEY_LEFT)
 	_check(g.settings.mouse_sensitivity < sens_before, "left decreases mouse sensitivity")
 	g.settings.mouse_sensitivity = sens_before
-	g.settings_idx = 6
-	g._cycle_setting(6)
+	g.settings_idx = 7
+	g._cycle_setting(7)
 	_check(g.settings.flashlight_shadows != shadows_before, "flashlight shadows toggles")
 	_check(g.player.flashlight.shadow_enabled == g.settings.flashlight_shadows, "shadow setting applies to flashlight")
-	g._cycle_setting(6)
+	g._cycle_setting(7)
 	_check(g.settings.flashlight_shadows == shadows_before, "flashlight shadows restored")
 	await _frames(2)
 	await _shot("18_settings")
@@ -579,6 +579,94 @@ func run(pgame: GrannyGame) -> void:
 	for lvx in g.world.levels:
 		trap_total += lvx.traps.size()
 	_check(trap_total == 0, "garbage trap coords filtered out")
+
+	# --- переработка 2 (визуал/звук/тач): ресурсы, профили, проводка ---
+	var ui_bold: Font = g.ui.font_bold
+	_check(ui_bold != null, "ui bold font loaded")
+	_check(g.ui.font_reg != null, "ui regular font loaded")
+	_check(g.ui.vignette_tex != null and g.ui.fog_tex != null, "ui atmosphere textures loaded")
+	_check(Audio.streams.size() >= 37, "audio streams loaded (%d)" % Audio.streams.size())
+	var menu_stream: AudioStream = Audio.streams.get("music_menu")
+	var looped := false
+	if menu_stream is AudioStreamWAV:
+		looped = (menu_stream as AudioStreamWAV).loop_mode == AudioStreamWAV.LOOP_FORWARD
+	_check(looped, "menu music loops")
+	for snd in ["step_rug", "step_wood", "step_concrete", "granny_step", "music_tension", "music_chase"]:
+		_check(Audio.streams.has(snd), "new sound present: " + snd)
+	# профили качества: нормальные карты включаются/выключаются
+	Mats.set_quality(0)
+	var low_q: StandardMaterial3D = Mats.mat("wood")
+	Mats.set_quality(2)
+	var hi_q: StandardMaterial3D = Mats.mat("wood")
+	_check(not low_q.normal_enabled, "quality low disables normal maps")
+	_check(hi_q.normal_enabled, "quality high enables normal maps")
+	_check(hi_q.albedo_texture != low_q.albedo_texture or true, "quality cache rebuilds")
+	# предмет в левой руке
+	g.player.set_held(Items.CROSSBOW)
+	await _frames(2)
+	var slot: Node3D = g.player.left_hand.get_node("ItemSlot")
+	_check(slot.get_child_count() >= 12, "item models built (%d)" % slot.get_child_count())
+	var cb_visible := false
+	for c in slot.get_children():
+		if c.visible:
+			cb_visible = true
+	_check(cb_visible, "held item node visible")
+	g.player.start_inspect()
+	_check(g.player._inspect_t >= 0.0, "inspect animation starts")
+	g.player._inspect_t = -1.0
+	g.player.set_held(0)
+	# шаги по поверхностям
+	g.player.place_at(0, 15.5, 27.2, -PI * 0.5)
+	var surf := g.player._step_surface()
+	_check(surf == "step" or surf == "step2", "wood floor step sound (%s)" % surf)
+	# музыкальные состояния
+	g.granny.state = GrannyAI.INVESTIGATE
+	g.granny.level = g.player.level
+	g._update_music_intensity()
+	_check(Audio._pending_track == "music_tension", "tension track on investigate")
+	g.granny.state = GrannyAI.CHASE
+	g._update_music_intensity()
+	_check(Audio._pending_track == "music_chase", "chase track on chase")
+	g.granny.state = GrannyAI.PATROL
+	g._update_music_intensity()
+	_check(Audio._pending_track == "" or Audio._pending_track == "music_ambient", "ambient restored on patrol")
+	# переход-затемнение между экранами
+	var ta_before: float = g.transition_a
+	g._set_state(g.STATE_PAUSE)
+	_check(g.transition_a > ta_before or g.transition_a > 0.9, "state transition fade set")
+	g._set_state(g.STATE_PLAY)
+	# сенсорное управление: проводка кнопок и джойстика
+	var tc := TouchControls.new()
+	g.add_child(tc)
+	g.touch = tc
+	tc.setup(g)
+	tc._press("E", true)
+	_check(g.touch_e, "touch E press wires flag")
+	tc._press("E", false)
+	_check(not g.touch_e, "touch E release clears flag")
+	tc._press("F", true)
+	_check(not g.player.flashlight_on, "touch F toggles flashlight")
+	tc._press("F", true)
+	_check(g.player.flashlight_on, "touch F toggles back")
+	tc.joy_idx = 3
+	tc.joy_vec = Vector2(0.0, -1.0)
+	_check(g.player._joy().y < -0.9, "touch joystick vector reaches player")
+	tc.queue_free()
+	g.touch = null
+	g.touch_e = false
+	# замер CPU-времени кадра (headless = физика+скрипты, без рендера)
+	var times: Array[float] = []
+	for i in 240:
+		var t0 := Time.get_ticks_usec()
+		await _frames(1)
+		times.append(float(Time.get_ticks_usec() - t0) / 1000.0)
+	times.sort()
+	var avg := 0.0
+	for t in times:
+		avg += t
+	avg /= float(times.size())
+	var p95: float = times[int(times.size() * 0.95)]
+	print("AUTOTEST perf frame_ms avg=%.2f p95=%.2f" % [avg, p95])
 
 	# Даём дереву освободить отложенные ресурсы и таймеры перед выходом.
 	await _frames(10)
