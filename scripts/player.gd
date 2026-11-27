@@ -1,6 +1,11 @@
 class_name PlayerBody
 extends CharacterBody3D
 
+# Игрок от первого лица: две руки с фонариком и предметом, плавные
+# анимации (подъём, осмотр, качание, присед), шаги по поверхностям,
+# пылинки в свете, тач-ввод. Viewmodel затекстурен и освещён
+# (раньше был плоским UNSHADED и умел только фонарик).
+
 const EYE_H := 1.55
 
 var game: Node
@@ -33,6 +38,19 @@ var shape_node: CollisionShape3D
 var viewmodel: Node3D
 var vm_lens_mat: StandardMaterial3D
 
+# --- руки и предметы ---
+var held_id := 0
+var _item_nodes: Dictionary = {}
+var _raise_k := 1.0
+var _inspect_t := -1.0
+var _crouch_k := 0.0
+var _strafe_k := 0.0
+var _last_held := 0
+var right_hand: Node3D
+var left_hand: Node3D
+
+var _dust: GPUParticles3D
+
 func _ready() -> void:
 	collision_layer = 1
 	collision_mask = 1
@@ -60,67 +78,20 @@ func _ready() -> void:
 	flashlight.shadow_enabled = true
 	camera.add_child(flashlight)
 	_build_viewmodel()
+	_build_dust()
 
 func setup(pgame: Node) -> void:
 	game = pgame
 
-func _vm_mat(col: Color, rough := 0.85) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = col
-	m.roughness = rough
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	return m
+# ------------------------------------------------------------------ материалы/примитивы
 
-func _vm_box(parent: Node3D, size: Vector3, pos: Vector3, mat: Material, rot := Vector3.ZERO) -> MeshInstance3D:
-	var bm := BoxMesh.new()
-	bm.size = size
-	var mi := MeshInstance3D.new()
-	mi.mesh = bm
-	mi.material_override = mat
-	mi.position = pos
-	mi.rotation = rot
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	parent.add_child(mi)
-	return mi
-
-func _vm_ball(parent: Node3D, radius: float, height: float, pos: Vector3, mat: Material, scl := Vector3.ONE, rot := Vector3.ZERO) -> MeshInstance3D:
-	var sm := SphereMesh.new()
-	sm.radius = radius
-	sm.height = height
-	sm.radial_segments = 14
-	sm.rings = 7
-	var mi := MeshInstance3D.new()
-	mi.mesh = sm
-	mi.material_override = mat
-	mi.position = pos
-	mi.scale = scl
-	mi.rotation = rot
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	parent.add_child(mi)
-	return mi
-
-func _vm_cyl(parent: Node3D, r_top: float, r_bottom: float, height: float, pos: Vector3, mat: Material) -> MeshInstance3D:
-	var cm := CylinderMesh.new()
-	cm.top_radius = r_top
-	cm.bottom_radius = r_bottom
-	cm.height = height
-	cm.radial_segments = 20
-	var mi := MeshInstance3D.new()
-	mi.mesh = cm
-	mi.material_override = mat
-	mi.position = pos
-	mi.rotation.x = -PI * 0.5
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	parent.add_child(mi)
-	return mi
-
-func _vm_limb(parent: Node3D, radius: float, from: Vector3, to: Vector3, mat: Material) -> MeshInstance3D:
+func _limb(parent: Node3D, radius: float, from: Vector3, to: Vector3, mat: Material) -> MeshInstance3D:
 	var d := to - from
 	var cm := CapsuleMesh.new()
 	cm.radius = radius
 	cm.height = maxf(d.length(), radius * 2.0 + 0.01)
-	cm.radial_segments = 14
-	cm.rings = 6
+	cm.radial_segments = 12 if Mats.quality() == 0 else 16
+	cm.rings = 5 if Mats.quality() == 0 else 8
 	var mi := MeshInstance3D.new()
 	mi.mesh = cm
 	mi.material_override = mat
@@ -130,20 +101,39 @@ func _vm_limb(parent: Node3D, radius: float, from: Vector3, to: Vector3, mat: Ma
 	parent.add_child(mi)
 	return mi
 
+func _part(parent: Node3D, mesh: Mesh, pos: Vector3, mat: Material, scl := Vector3.ONE, rot := Vector3.ZERO) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	mi.position = pos
+	mi.scale = scl
+	mi.rotation = rot
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(mi)
+	return mi
+
+func _cyl_mesh(r_top: float, r_bot: float, h: float, seg: int = 14) -> CylinderMesh:
+	var cm := CylinderMesh.new()
+	cm.top_radius = r_top
+	cm.bottom_radius = r_bot
+	cm.height = h
+	cm.radial_segments = seg
+	return cm
+
+# ------------------------------------------------------------------ viewmodel
+
 func _build_viewmodel() -> void:
-	# Рука с фонариком в кадре — как в оригинале.
 	viewmodel = Node3D.new()
 	viewmodel.name = "Viewmodel"
-	viewmodel.position = Vector3(0.44, -0.34, -0.68)
-	viewmodel.rotation = Vector3(0.03, 0.08, -0.10)
 	camera.add_child(viewmodel)
 
-	var hand_mat := _vm_mat(Color(0.27, 0.19, 0.15))
-	var hand_hi := _vm_mat(Color(0.32, 0.23, 0.18))
-	var sleeve_mat := _vm_mat(Color(0.14, 0.13, 0.14))
-	var metal_mat := _vm_mat(Color(0.19, 0.20, 0.21))
-	var metal_hi := _vm_mat(Color(0.35, 0.36, 0.38))
-	var grip_mat := _vm_mat(Color(0.10, 0.10, 0.11))
+	var skin := Mats.mat("skin")
+	var sleeve := Mats.mat("fabric_blue")
+	var metal := Mats.mat("metal")
+	var metal_hi := Mats.mat("brass")
+	var grip := Mats.mat("black")
+	var skin_hi := Mats.mat("skin")
+
 	vm_lens_mat = StandardMaterial3D.new()
 	vm_lens_mat.albedo_color = Color(0.38, 0.24, 0.10)
 	vm_lens_mat.emission_enabled = true
@@ -151,38 +141,250 @@ func _build_viewmodel() -> void:
 	vm_lens_mat.emission_energy_multiplier = 0.7
 	vm_lens_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 
-	# Фонарик повёрнут влево-вперёд, поэтому виден его корпус, а не яркий торец.
+	# --- правая рука с фонариком ---
+	right_hand = Node3D.new()
+	right_hand.name = "RightHand"
+	right_hand.position = Vector3(0.44, -0.34, -0.68)
+	right_hand.rotation = Vector3(0.03, 0.08, -0.10)
+	viewmodel.add_child(right_hand)
+
 	var torch := Node3D.new()
 	torch.name = "Torch"
 	torch.rotation = Vector3(0.17, 0.31, 0.03)
-	viewmodel.add_child(torch)
-
-	# Корпус, хвостовик и насечки.
-	_vm_cyl(torch, 0.020, 0.023, 0.16, Vector3(0.0, 0.0, -0.055), metal_mat)
-	_vm_cyl(torch, 0.024, 0.024, 0.012, Vector3(0.0, 0.0, 0.030), grip_mat)
+	right_hand.add_child(torch)
+	# корпус, хвостовик, насечки, кнопка, головка, линза
+	_part(torch, _cyl_mesh(0.020, 0.023, 0.16), Vector3(0.0, 0.0, -0.055), metal)
+	_part(torch, _cyl_mesh(0.024, 0.024, 0.012), Vector3(0.0, 0.0, 0.030), grip)
 	for i in 3:
-		_vm_cyl(torch, 0.0245, 0.0245, 0.008, Vector3(0.0, 0.0, 0.006 - float(i) * 0.026), grip_mat)
-	# Светлая грань сверху — читаемый блик на плоском вьюмоделе.
-	_vm_box(torch, Vector3(0.007, 0.003, 0.125), Vector3(0.0, 0.019, -0.055), metal_hi)
-	# Кнопка.
-	_vm_box(torch, Vector3(0.012, 0.009, 0.032), Vector3(0.0, 0.014, 0.024), metal_hi)
+		_part(torch, _cyl_mesh(0.0245, 0.0245, 0.008), Vector3(0.0, 0.0, 0.006 - float(i) * 0.026), grip)
+	_part(torch, _cyl_mesh(0.036, 0.023, 0.085), Vector3(0.0, 0.0, -0.178), metal)
+	_part(torch, _cyl_mesh(0.039, 0.039, 0.012), Vector3(0.0, 0.0, -0.226), metal_hi)
+	_part(torch, _cyl_mesh(0.033, 0.033, 0.006, 12), Vector3(0.0, 0.0, -0.234), vm_lens_mat)
 
-	# Расширяющаяся головка с ободком и тёмной линзой.
-	_vm_cyl(torch, 0.036, 0.023, 0.085, Vector3(0.0, 0.0, -0.178), metal_mat)
-	_vm_cyl(torch, 0.039, 0.039, 0.012, Vector3(0.0, 0.0, -0.226), metal_hi)
-	_vm_cyl(torch, 0.033, 0.033, 0.006, Vector3(0.0, 0.0, -0.234), vm_lens_mat)
-
-	# Кисть обхватывает корпус справа: ладонь, четыре пальца и большой палец.
-	_vm_ball(torch, 0.029, 0.066, Vector3(0.043, -0.030, -0.004), hand_mat, Vector3(0.90, 1.05, 0.95), Vector3(0.0, 0.0, 0.12))
+	# кисть: ладонь, 4 пальца обхватом, большой палец
+	var palm := SphereMesh.new()
+	palm.radius = 0.029
+	palm.height = 0.066
+	palm.radial_segments = 10 if Mats.quality() == 0 else 14
+	palm.rings = 6 if Mats.quality() == 0 else 8
+	_part(torch, palm, Vector3(0.043, -0.030, -0.004), skin, Vector3(0.90, 1.05, 0.95), Vector3(0.0, 0.0, 0.12))
 	for i in 4:
 		var fz := 0.038 - float(i) * 0.024
-		_vm_limb(torch, 0.0110, Vector3(0.050, -0.020, fz), Vector3(-0.020, -0.006, fz - 0.008), hand_hi)
-	_vm_limb(torch, 0.0100, Vector3(0.030, -0.040, 0.045), Vector3(0.024, -0.030, -0.015), hand_hi)
-	_vm_limb(torch, 0.023, Vector3(0.038, -0.048, 0.040), Vector3(0.045, -0.062, 0.070), hand_mat)
-	# Манжета и предплечье уходят за правый нижний край экрана.
-	_vm_limb(torch, 0.033, Vector3(0.042, -0.055, 0.055), Vector3(0.055, -0.085, 0.105), sleeve_mat)
-	var wrist := torch.transform * Vector3(0.055, -0.085, 0.105)
-	_vm_limb(viewmodel, 0.042, wrist, Vector3(0.21, -0.42, 0.32), sleeve_mat)
+		_limb(torch, 0.0110, Vector3(0.050, -0.020, fz), Vector3(-0.020, -0.006, fz - 0.008), skin_hi)
+	_limb(torch, 0.0100, Vector3(0.030, -0.040, 0.045), Vector3(0.024, -0.030, -0.015), skin_hi)
+	_limb(torch, 0.023, Vector3(0.038, -0.048, 0.040), Vector3(0.045, -0.062, 0.070), skin)
+	# манжета и предплечье
+	_limb(torch, 0.033, Vector3(0.042, -0.055, 0.055), Vector3(0.055, -0.085, 0.105), sleeve)
+	var wrist: Vector3 = torch.transform * Vector3(0.055, -0.085, 0.105)
+	_limb(right_hand, 0.042, wrist, Vector3(0.21, -0.42, 0.32), sleeve)
+
+	# --- левая рука держит предмет ---
+	left_hand = Node3D.new()
+	left_hand.name = "LeftHand"
+	left_hand.position = Vector3(-0.42, -0.37, -0.60)
+	left_hand.rotation = Vector3(0.04, -0.10, 0.12)
+	viewmodel.add_child(left_hand)
+
+	# ладонь левой раскрыта вверх: кисть + пальцы полусогнуты
+	var palm2 := SphereMesh.new()
+	palm2.radius = 0.028
+	palm2.height = 0.060
+	palm2.radial_segments = 10 if Mats.quality() == 0 else 14
+	palm2.rings = 6 if Mats.quality() == 0 else 8
+	_part(left_hand, palm2, Vector3(-0.006, -0.020, -0.010), skin, Vector3(1.0, 0.85, 1.05), Vector3(0.0, 0.0, -0.10))
+	for i in 4:
+		var fz2 := -0.030 - float(i) * 0.022
+		_limb(left_hand, 0.0105, Vector3(-0.044, -0.014, fz2 + 0.012), Vector3(0.018, 0.004, fz2 - 0.004), skin_hi)
+	_limb(left_hand, 0.0095, Vector3(-0.026, -0.012, 0.042), Vector3(0.020, -0.002, -0.004), skin_hi)
+	_limb(left_hand, 0.022, Vector3(-0.034, -0.042, 0.036), Vector3(-0.046, -0.060, 0.066), skin)
+	_limb(left_hand, 0.033, Vector3(-0.040, -0.052, 0.050), Vector3(-0.056, -0.082, 0.10), sleeve)
+	var wrist2: Vector3 = left_hand.transform * Vector3(-0.056, -0.082, 0.10)
+	_limb(viewmodel, 0.042, wrist2, Vector3(-0.22, -0.44, 0.30), sleeve)
+
+	# слот предмета: точка над ладонью
+	var slot := Node3D.new()
+	slot.name = "ItemSlot"
+	slot.position = Vector3(-0.004, 0.018, -0.012)
+	left_hand.add_child(slot)
+	_build_item_models(slot)
+
+func _item_material(name: String) -> StandardMaterial3D:
+	var m := Mats.mat(name)
+	# материалы предметов затенены обычным способом — vertex-AO на них не влияет
+	return m
+
+func _build_item_models(slot: Node3D) -> void:
+	# Каждая модель предмета — компактный узел в масштабе ладони.
+	var brass := _item_material("brass")
+	var metal := _item_material("metal")
+	var red := _item_material("red")
+	var paper := _item_material("paper")
+	var white := _item_material("white")
+	var black := _item_material("black")
+	var glass := _item_material("bottle")
+	var wood := _item_material("wood_dark")
+	var skin := Mats.mat("fabric_red")
+
+	# КЛЮЧ (1)
+	var key := Node3D.new()
+	var ring := TorusMesh.new()
+	ring.inner_radius = 0.008
+	ring.outer_radius = 0.017
+	ring.rings = 12
+	ring.ring_segments = 6
+	_part(key, ring, Vector3.ZERO, brass)
+	_part(key, BoxMesh.new(), Vector3(0.024, -0.004, 0.0), brass, Vector3(0.05, 0.006, 0.014))
+	_part(key, BoxMesh.new(), Vector3(0.038, -0.008, 0.0), brass, Vector3(0.012, 0.012, 0.010))
+	slot.add_child(key)
+	_item_nodes[1] = key
+
+	# МОНТИРОВКА (2)
+	var crow := Node3D.new()
+	var shaft := _cyl_mesh(0.010, 0.011, 0.26, 10)
+	_part(crow, shaft, Vector3.ZERO, red, Vector3.ONE, Vector3(0.0, 0.0, PI * 0.5))
+	_part(crow, BoxMesh.new(), Vector3(-0.135, 0.014, 0.0), red, Vector3(0.045, 0.020, 0.018), Vector3(0.0, 0.0, 0.6))
+	_part(crow, BoxMesh.new(), Vector3(0.132, 0.010, 0.0), red, Vector3(0.030, 0.016, 0.016), Vector3(0.0, 0.0, -0.5))
+	slot.add_child(crow)
+	_item_nodes[2] = crow
+
+	# ЗАПИСКА / ЗАПИСКА-2 / ФОТО (3, 13, 14)
+	for trio in [[3, 0.0], [13, 0.05], [14, -0.04]]:
+		var np := Node3D.new()
+		var plane := PlaneMesh.new()
+		plane.size = Vector2(0.09, 0.12)
+		_part(np, plane, Vector3.ZERO, paper, Vector3.ONE, Vector3(-PI * 0.5 + 0.25, 0.0, float(trio[1])))
+		_part(np, plane, Vector3(0.004, 0.004, 0.006), paper, Vector3(0.92, 0.92, 1.0), Vector3(-PI * 0.5 + 0.35, 0.08, float(trio[1]) + 0.05))
+		slot.add_child(np)
+		_item_nodes[int(trio[0])] = np
+
+	# МОЛОКО (4)
+	var milk := Node3D.new()
+	_part(milk, _cyl_mesh(0.030, 0.034, 0.13, 12), Vector3.ZERO, white)
+	_part(milk, _cyl_mesh(0.018, 0.024, 0.03, 10), Vector3(0.0, 0.078, 0.0), white)
+	slot.add_child(milk)
+	_item_nodes[4] = milk
+
+	# БАТАРЕЙКА (5)
+	var bat := Node3D.new()
+	_part(bat, _cyl_mesh(0.016, 0.016, 0.085, 12), Vector3.ZERO, black, Vector3.ONE, Vector3(0.0, 0.0, PI * 0.5))
+	_part(bat, _cyl_mesh(0.006, 0.006, 0.01, 8), Vector3(0.046, 0.0, 0.0), brass, Vector3.ONE, Vector3(0.0, 0.0, PI * 0.5))
+	slot.add_child(bat)
+	_item_nodes[5] = bat
+
+	# БИНТ (6)
+	var band := Node3D.new()
+	_part(band, _cyl_mesh(0.034, 0.034, 0.05, 14), Vector3.ZERO, white, Vector3.ONE, Vector3(0.0, 0.0, PI * 0.5))
+	_part(band, _cyl_mesh(0.010, 0.010, 0.02, 8), Vector3(0.0, 0.0, 0.0), paper, Vector3.ONE, Vector3(0.0, 0.0, PI * 0.5))
+	slot.add_child(band)
+	_item_nodes[6] = band
+
+	# БУТЫЛКА (7)
+	var bot := Node3D.new()
+	_part(bot, _cyl_mesh(0.030, 0.033, 0.15, 12), Vector3(0.0, 0.02, 0.0), glass)
+	_part(bot, _cyl_mesh(0.012, 0.024, 0.06, 10), Vector3(0.0, 0.12, 0.0), glass)
+	slot.add_child(bot)
+	_item_nodes[7] = bot
+
+	# АРБАЛЕТ (8)
+	var cb := Node3D.new()
+	_part(cb, BoxMesh.new(), Vector3(0.0, 0.0, -0.06), wood, Vector3(0.030, 0.042, 0.30))
+	_part(cb, BoxMesh.new(), Vector3(0.0, 0.026, -0.19), metal, Vector3(0.30, 0.014, 0.014))
+	_part(cb, BoxMesh.new(), Vector3(0.0, 0.010, -0.19), black, Vector3(0.28, 0.003, 0.003))
+	_part(cb, BoxMesh.new(), Vector3(0.0, 0.02, -0.055), brass, Vector3(0.02, 0.024, 0.05))
+	slot.add_child(cb)
+	_item_nodes[8] = cb
+
+	# ДАРТ (9)
+	var dart := Node3D.new()
+	_part(dart, _cyl_mesh(0.004, 0.004, 0.16, 8), Vector3(0.0, 0.0, -0.04), metal, Vector3.ONE, Vector3(PI * 0.5, 0.0, 0.0))
+	_part(dart, BoxMesh.new(), Vector3(0.0, 0.0, 0.06), red, Vector3(0.02, 0.004, 0.035))
+	slot.add_child(dart)
+	_item_nodes[9] = dart
+
+	# КЛЮЧ ОТ МАШИНЫ (11)
+	var ckey := Node3D.new()
+	_part(ckey, BoxMesh.new(), Vector3(0.0, 0.0, 0.0), black, Vector3(0.016, 0.008, 0.05))
+	_part(ckey, BoxMesh.new(), Vector3(0.0, -0.004, -0.036), brass, Vector3(0.014, 0.004, 0.026))
+	slot.add_child(ckey)
+	_item_nodes[11] = ckey
+
+	# АККУМУЛЯТОР (12)
+	var acc := Node3D.new()
+	_part(acc, BoxMesh.new(), Vector3(0.0, 0.012, 0.0), black, Vector3(0.13, 0.09, 0.10))
+	_part(acc, _cyl_mesh(0.010, 0.010, 0.02, 8), Vector3(-0.04, 0.062, 0.0), brass)
+	_part(acc, _cyl_mesh(0.010, 0.010, 0.02, 8), Vector3(0.04, 0.062, 0.0), brass)
+	slot.add_child(acc)
+	_item_nodes[12] = acc
+
+	# МИШКА (15)
+	var ted := Node3D.new()
+	var fur := Mats.mat("fabric_red")
+	var tb := SphereMesh.new()
+	tb.radius = 0.032
+	tb.height = 0.07
+	_part(ted, tb, Vector3(0.0, 0.03, 0.0), fur, Vector3(0.9, 1.15, 0.8))
+	var th := SphereMesh.new()
+	th.radius = 0.022
+	th.height = 0.05
+	_part(ted, th, Vector3(0.0, 0.075, 0.0), fur)
+	for sx in [-1.0, 1.0]:
+		_part(ted, th, Vector3(sx * 0.018, 0.094, 0.0), fur, Vector3(0.5, 0.5, 0.5))
+	var snout := SphereMesh.new()
+	snout.radius = 0.010
+	snout.height = 0.022
+	_part(ted, snout, Vector3(0.0, 0.070, -0.020), black)
+	for sx in [-1.0, 1.0]:
+		_limb(ted, 0.008, Vector3(sx * 0.026, 0.006, -0.012), Vector3(sx * 0.034, -0.010, -0.028), fur)
+	slot.add_child(ted)
+	_item_nodes[15] = ted
+
+func set_held(id: int) -> void:
+	id = int(id) if _item_nodes.has(int(id)) else 0
+	if id == held_id:
+		return
+	held_id = id
+	_raise_k = 0.0  # анимация подъёма нового предмета
+	if _inspect_t >= 0.0:
+		_inspect_t = -1.0
+
+func start_inspect() -> void:
+	if held_id != 0 and _inspect_t < 0.0:
+		_inspect_t = 0.0
+		Audio.play("ui_move", 0.35, 0.9)
+
+func _build_dust() -> void:
+	var q := Mats.quality()
+	if q == 0:
+		return
+	_dust = GPUParticles3D.new()
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(2.0, 1.1, 2.0)
+	pm.direction = Vector3(0, 1, 0)
+	pm.spread = 180.0
+	pm.initial_velocity_min = 0.015
+	pm.initial_velocity_max = 0.06
+	pm.gravity = Vector3(0, 0.006, 0)
+	pm.scale_min = 0.5
+	pm.scale_max = 1.2
+	pm.angle_min = 0.0
+	pm.angle_max = 360.0
+	_dust.process_material = pm
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.02, 0.02)
+	var dm := StandardMaterial3D.new()
+	dm.albedo_texture = Mats.tex("dust")
+	dm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	dm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	dm.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	dm.albedo_color = Color(1, 1, 1, 0.35)
+	quad.material = dm
+	_dust.draw_pass_1 = quad
+	_dust.amount = 24 if q == 1 else 44
+	_dust.lifetime = 7.0
+	_dust.local_coords = false
+	_dust.position = Vector3(0, 1.0, 0)
+	add_child(_dust)
 
 func _process(_dt: float) -> void:
 	if viewmodel == null or game == null:
@@ -196,9 +398,37 @@ func _process(_dt: float) -> void:
 	var dip := -0.05 if crouch else 0.0
 	var push := act_push
 	var throw_k := act_throw
-	viewmodel.position = Vector3(0.44 + sway, -0.34 + bob_y + dip - push * 0.055, -0.68 + push * 0.035)
-	viewmodel.rotation = Vector3(0.03 + push * 0.22, 0.08, -0.10 - sway * 1.4 + throw_k * 0.55)
+	# анимация подъёма рук/предмета при смене состояния
+	_raise_k = minf(1.0, _raise_k + _dt * 3.2)
+	var rk := 1.0 - _raise_k
+	# осмотр предмета (X): плавный поворот к центру + вращение
+	var inspect_rot := 0.0
+	var inspect_lean := 0.0
+	if _inspect_t >= 0.0:
+		_inspect_t += _dt
+		var k := clampf(_inspect_t / 2.4, 0.0, 1.0)
+		inspect_rot = k * TAU * 1.0
+		inspect_lean = sin(minf(k * PI, PI)) * 0.55
+		if k >= 1.0:
+			_inspect_t = -1.0
+	var slot: Node3D = left_hand.get_node_or_null("ItemSlot")
+	if slot != null:
+		slot.rotation.y = inspect_rot
+	viewmodel.position = Vector3(
+		0.44 + sway - inspect_lean * 0.16,
+		-0.34 + bob_y + dip - push * 0.055 - rk * 0.30,
+		-0.68 + push * 0.035 - inspect_lean * 0.10 - rk * 0.12)
+	viewmodel.rotation = Vector3(
+		0.03 + push * 0.22 - rk * 0.55 - inspect_lean * 0.35,
+		0.08 - inspect_lean * 0.5,
+		-0.10 - sway * 1.4 + throw_k * 0.55)
+	# предмет виден только в левой руке; скрываем остальные модели
+	for id in _item_nodes:
+		var node: Node3D = _item_nodes[id]
+		node.visible = id == held_id
 	vm_lens_mat.emission_enabled = flashlight_on
+	# свет фонарика подсвечивает руки: лёгкий локальный OmniLight не нужен —
+	# SpotLight камеры уже освещает вьюмодель, т.к. она перед камерой.
 
 func place_at(pid: int, x: float, z: float, a: float) -> void:
 	level = pid
@@ -225,6 +455,22 @@ func _unhandled_input(event: InputEvent) -> void:
 		pitch = clampf(pitch - event.relative.y * 0.0022 * sens * inv, -1.35, 1.35)
 		if hidden:
 			pitch = clampf(pitch, -0.7, 0.7)
+	elif event is InputEventScreenDrag:
+		# сенсорный осмотр: активная зона устанавливается TouchControls
+		if bool(game.get("touch_look_enabled")):
+			var tsens: float = mouse_sensitivity * game.look_scale() * 1.6
+			var tinv: float = -1.0 if game.invert_look() else 1.0
+			angle = wrapf(angle + event.relative.x * 0.0034 * tsens, -PI, PI)
+			pitch = clampf(pitch - event.relative.y * 0.0030 * tsens * tinv, -1.35, 1.35)
+			if hidden:
+				pitch = clampf(pitch, -0.7, 0.7)
+
+func _joy() -> Vector2:
+	var v := Vector2.ZERO
+	var touch = game.get("touch")
+	if touch != null:
+		v = touch.joy_vec
+	return v
 
 func _physics_process(dt: float) -> void:
 	if game == null:
@@ -246,8 +492,13 @@ func _physics_process(dt: float) -> void:
 			game.toast_msg("Ты вырвался из капкана!", 2.0, 1)
 		return
 
+	var joy := _joy()
 	var fwd := 0.0
 	var strafe := 0.0
+	if joy.length() > 0.15:
+		# joy_vec — экранный вектор (вверх = отрицательный y)
+		fwd = -joy.y
+		strafe = joy.x
 	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
 		fwd += 1.0
 	if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
@@ -258,21 +509,29 @@ func _physics_process(dt: float) -> void:
 		strafe -= 1.0
 	if Input.is_physical_key_pressed(KEY_R):
 		angle = wrapf(angle + dt * 1.9, -PI, PI)
-	crouch = Input.is_physical_key_pressed(KEY_CTRL) or Input.is_physical_key_pressed(KEY_C)
-	var want_run := Input.is_physical_key_pressed(KEY_SHIFT) and not crouch
+	crouch = Input.is_physical_key_pressed(KEY_CTRL) or Input.is_physical_key_pressed(KEY_C) or bool(game.get("touch_crouch"))
+	var want_run := Input.is_physical_key_pressed(KEY_SHIFT) or bool(game.get("touch_run"))
+	if joy.length() > 0.92:
+		want_run = true  # джойстик до упора = бег
 	var moving := absf(fwd) + absf(strafe) > 0.01
-	var running := want_run and stamina > 0.05 and moving
+	var running := want_run and stamina > 0.05 and moving and not crouch
 	var speed := 2.05
 	if crouch:
 		speed = 1.05
 	elif running:
 		speed = 3.45
+	if moving:
+		var dir_len := Vector2(fwd, strafe).length()
+		if dir_len > 1.0:
+			fwd /= dir_len
+			strafe /= dir_len
 	if game.in_spider_web():
 		speed *= 0.33
 	var dir := Vector3.ZERO
 	if moving:
 		dir = Vector3(cos(angle) * fwd - sin(angle) * strafe, 0.0, sin(angle) * fwd + cos(angle) * strafe).normalized()
 	move_speed = speed if moving else 0.0
+	_strafe_k = lerpf(_strafe_k, clampf(strafe, -1.0, 1.0), dt * 8.0)
 	velocity.x = dir.x * speed
 	velocity.z = dir.z * speed
 	velocity.y -= 20.0 * dt
@@ -283,16 +542,11 @@ func _physics_process(dt: float) -> void:
 		step_acc += dt * (3.4 if running else (1.2 if crouch else 2.15))
 		if step_acc > 1.0:
 			step_acc = 0.0
-			var vol := 0.5 if running else (0.12 if crouch else 0.28)
-			var tile: int = game.world.levels[level].get_tile(int(floor(global_position.x - game.world.levels[level].origin.x)), int(floor(global_position.z - game.world.levels[level].origin.z)))
-			var snd := "step_tile" if tile == LevelData.TILEW else ("step" if randf() < 0.5 else "step2")
-			Audio.play(snd, vol, 0.85 + randf() * 0.3)
-			if running:
-				game.emit_noise(global_position.x - game.world.levels[level].origin.x, global_position.z - game.world.levels[level].origin.z, 6.2, "шаги")
-			elif not crouch:
-				game.emit_noise(global_position.x - game.world.levels[level].origin.x, global_position.z - game.world.levels[level].origin.z, 2.6, "шаги")
-			elif randf() < 0.35:
-				game.emit_noise(global_position.x - game.world.levels[level].origin.x, global_position.z - game.world.levels[level].origin.z, 0.9, "скрип")
+			_play_step(running, crouch)
+	else:
+		_strafe_k = lerpf(_strafe_k, 0.0, dt * 8.0)
+		if _inspect_t >= 0.0:
+			_inspect_t = -1.0  # движение отменяет осмотр
 
 	if running and moving:
 		stamina = maxf(0.0, stamina - dt * 0.17)
@@ -315,33 +569,65 @@ func _physics_process(dt: float) -> void:
 	gun_t = maxf(0.0, gun_t - dt * 3.0)
 	act_push = maxf(0.0, act_push - dt * 3.4)
 	act_throw = maxf(0.0, act_throw - dt * 2.6)
-	aim_k = move_toward(aim_k, 1.0 if Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and not crouch else 0.0, dt * 7.0)
+	var aim_hold := (Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) or bool(game.get("touch_aim"))) and not crouch
+	aim_k = move_toward(aim_k, 1.0 if aim_hold else 0.0, dt * 7.0)
 	camera.fov = lerpf(75.0, 55.0, aim_k)
 	rotation.y = -angle - PI * 0.5
 	apply_camera()
 
+var touch = null  # TouchControls; заполняется game'ом (избегаем цикла типов)
+
+func _step_surface() -> String:
+	var lv: LevelData = game.world.levels[level]
+	var tile: int = lv.get_tile(int(floor(global_position.x - lv.origin.x)), int(floor(global_position.z - lv.origin.z)))
+	if tile == LevelData.RUG:
+		return "step_rug"
+	if tile == LevelData.TILEW:
+		return "step_tile"
+	if level == 1:
+		return "step_wood"
+	if level == 2 or level == 3:
+		return "step_concrete"
+	return "step" if randf() < 0.5 else "step2"
+
+func _play_step(running: bool, sneaking: bool) -> void:
+	var vol := 0.5 if running else (0.12 if sneaking else 0.28)
+	var pitch_s := 0.9 + randf() * 0.25
+	Audio.play(_step_surface(), vol, pitch_s)
+	if running:
+		game.emit_noise(global_position.x - game.world.levels[level].origin.x, global_position.z - game.world.levels[level].origin.z, 6.2, "шаги")
+	elif not sneaking:
+		game.emit_noise(global_position.x - game.world.levels[level].origin.x, global_position.z - game.world.levels[level].origin.z, 2.6, "шаги")
+	elif randf() < 0.35:
+		game.emit_noise(global_position.x - game.world.levels[level].origin.x, global_position.z - game.world.levels[level].origin.z, 0.9, "скрип")
+
 func apply_camera() -> void:
 	if camera == null:
 		return
-	var lv: LevelData = game.world.levels[level]
-	var local_x := global_position.x - lv.origin.x
-	var local_z := global_position.z - lv.origin.z
-	var tile := lv.get_tile(int(floor(local_x)), int(floor(local_z)))
-	var tile_bob := 0.0
+	# плавное приседание
+	var want_crouch_k := 1.0 if (crouch or hidden) else 0.0
+	if hidden and hide_spot != null and hide_spot.is_bed:
+		want_crouch_k = 1.6  # ниже, чем обычное приседание
+	_crouch_k = lerpf(_crouch_k, want_crouch_k, 0.12)
 	if hidden:
 		camera.position.y = 0.28 if hide_spot != null and hide_spot.is_bed else 1.18
 		camera.position.x = 0.0
 		camera.rotation.x = pitch * 0.4
+		camera.rotation.z = 0.0
 		flashlight.visible = false
 		return
 	var speed_k := clampf(move_speed / 2.0, 0.0, 1.0)
-	camera.position.y = EYE_H + sin(bob * 2.0) * 0.012 * speed_k - (0.30 if crouch else 0.0)
+	var crouch_drop: float = 0.30 * clampf(_crouch_k, 0.0, 1.2)
+	camera.position.y = EYE_H + sin(bob * 2.0) * 0.012 * speed_k - crouch_drop
 	camera.position.x = 0.0
 	camera.rotation.x = pitch + sin(bob) * 0.022 * clampf(move_speed / 3.0, 0.0, 1.0)
-	if tile == LevelData.TILEW:
-		tile_bob = 0.0
+	# лёгкий крен при стрейфе и покачивание взгляда
+	camera.rotation.z = -_strafe_k * 0.022 + sin(bob) * 0.006 * speed_k
 	flashlight.visible = flashlight_on and battery > 0.0
-	flashlight.light_energy = 1.30 * (0.75 + 0.25 * clampf(battery, 0.0, 1.0))
+	var flick := 1.0
+	if battery < 0.18:
+		flick = 0.88 + 0.12 * absf(sin(float(game.time) * 23.0))
+	flashlight.light_energy = 1.30 * (0.75 + 0.25 * clampf(battery, 0.0, 1.0)) * flick
 
 func enter_hide(h) -> void:
 	hidden = true
@@ -389,3 +675,6 @@ func reset_state() -> void:
 	bob = 0.0
 	step_acc = 0.0
 	move_speed = 0.0
+	_crouch_k = 0.0
+	_inspect_t = -1.0
+	_raise_k = 1.0

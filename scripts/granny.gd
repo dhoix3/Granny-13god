@@ -363,7 +363,7 @@ func update(dt: float, g: Node) -> void:
 	if step_acc >= 0.78:
 		step_acc = 0.0
 		if same_level and not g.player.hidden and not g.player.dead:
-			Audio.play3d("step", g.world.get_root(level), Vector3(x, 0.6, y), 0.5 + randf() * 0.2, 0.60 + randf() * 0.25, 6.0)
+			Audio.play3d("granny_step", g.world.get_root(level), Vector3(x, 0.6, y), 0.5 + randf() * 0.2, 0.85 + randf() * 0.2, 6.0)
 	# Гул при спокойном состоянии — мягкий ориентир, где бабушка.
 	if state == PATROL or state == SEARCH or state == INVESTIGATE:
 		hum_t -= dt

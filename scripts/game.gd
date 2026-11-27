@@ -136,11 +136,21 @@ var e_down := false
 var mouse_e_down := false
 var debug_on := false
 var _autotest = null
+# --- сенсорное управление (Android) ---
+var touch = null  # TouchControls
+var touch_e := false
+var touch_run := false
+var touch_crouch := false
+var touch_aim := false
+var touch_look_enabled := false
+# переход между экранами (анимация затемнения)
+var transition_a := 0.0
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	rng.seed = seed
 	settings = GameSettings.load_settings()
+	Mats.set_quality(settings.quality)
 	_make_diffs()
 	diff = diffs[diff_index]
 	_setup_environment()
@@ -174,6 +184,12 @@ func _ready() -> void:
 	ui.name = "GameUI"
 	cl.add_child(ui)
 	ui.setup(self)
+
+	if DisplayServer.is_touchscreen_available() or OS.has_feature("android"):
+		touch = TouchControls.new()
+		touch.name = "TouchControls"
+		add_child(touch)
+		touch.setup(self)
 
 	settings.apply(get_viewport())
 	_refresh_save_cache()
@@ -231,7 +247,7 @@ func _process(dt: float) -> void:
 	if dt > 0.08:
 		dt = 0.08
 	time += dt
-	var want_e: bool = Input.is_physical_key_pressed(KEY_E) or mouse_e_down
+	var want_e: bool = Input.is_physical_key_pressed(KEY_E) or mouse_e_down or touch_e
 	e_down = want_e
 	e_hit = e_down and not _prev_e
 	_prev_e = e_down
@@ -255,6 +271,7 @@ func _process(dt: float) -> void:
 	if toast_t > 0.0:
 		toast_t -= dt
 	fade_t = maxf(0.0, fade_t - dt * 1.6)
+	transition_a = maxf(0.0, transition_a - dt * 3.2)
 	shake = maxf(0.0, shake - dt * 2.2)
 	if player != null and player.camera != null:
 		if state == STATE_PLAY:
@@ -362,6 +379,8 @@ func _on_key(k: int) -> void:
 				toggle_flash()
 			elif k == KEY_Q:
 				fire_crossbow()
+			elif k == KEY_X:
+				player.start_inspect()
 			elif k == KEY_SPACE:
 				if player.trap_stuck > 0.0:
 					player.trap_stuck -= 0.22
@@ -479,14 +498,15 @@ func _menu_click() -> void:
 		STATE_WIN, STATE_OVER:
 			reset_to_title()
 
-const SETTINGS_ROW_COUNT := 9
+func settings_row_count() -> int:
+	return 11 if settings != null and settings.is_touch else 10
 
 func _on_key_settings(k: int) -> void:
 	if k == KEY_UP or k == KEY_W:
-		settings_idx = (settings_idx + SETTINGS_ROW_COUNT - 1) % SETTINGS_ROW_COUNT
+		settings_idx = (settings_idx + settings_row_count() - 1) % settings_row_count()
 		Audio.play("ui_move", 0.5, 1.0)
 	elif k == KEY_DOWN or k == KEY_S:
-		settings_idx = (settings_idx + 1) % SETTINGS_ROW_COUNT
+		settings_idx = (settings_idx + 1) % settings_row_count()
 		Audio.play("ui_move", 0.5, 1.0)
 	elif k == KEY_LEFT or k == KEY_A:
 		_adjust_setting(settings_idx, -1.0)
@@ -513,18 +533,27 @@ func _adjust_setting(row: int, dir: float) -> void:
 			settings.mouse_sensitivity = clampf(settings.mouse_sensitivity + dir * 0.1, 0.2, 2.5)
 			changed = true
 		4:
-			settings.invert_y = not settings.invert_y
+			settings.quality = (settings.quality + (1 if dir >= 0.0 else 2)) % 3
 			changed = true
 		5:
-			settings.fullscreen = not settings.fullscreen
+			settings.invert_y = not settings.invert_y
 			changed = true
 		6:
-			settings.flashlight_shadows = not settings.flashlight_shadows
+			settings.fullscreen = not settings.fullscreen
 			changed = true
 		7:
-			settings.msaa = (settings.msaa + (1 if dir >= 0.0 else 2)) % 3
+			settings.flashlight_shadows = not settings.flashlight_shadows
 			changed = true
 		8:
+			settings.msaa = (settings.msaa + (1 if dir >= 0.0 else 2)) % 3
+			changed = true
+		9:
+			if settings.is_touch:
+				settings.touch_scale = clampf(settings.touch_scale + dir * 0.1, 0.75, 1.8)
+				changed = true
+			else:
+				return
+		10:
 			return
 	if not changed:
 		return
@@ -532,20 +561,20 @@ func _adjust_setting(row: int, dir: float) -> void:
 	Audio.play("ui_move", 0.55, 1.0 if dir >= 0.0 else 0.9)
 
 func _cycle_setting(row: int) -> void:
-	if row == SETTINGS_ROW_COUNT - 1:
+	if row == settings_row_count() - 1:
 		_close_settings()
 		return
 	_adjust_setting(row, 1.0)
 
 func _click_setting() -> void:
 	var row := ui.hover_idx
-	if row < 0 or row >= SETTINGS_ROW_COUNT:
+	if row < 0 or row >= settings_row_count():
 		return
-	if row == SETTINGS_ROW_COUNT - 1:
+	if row == settings_row_count() - 1:
 		Audio.play("ui_select", 0.6, 1.0)
 		_close_settings()
 		return
-	if row <= 3:
+	if row <= 3 or (row == 9 and settings.is_touch):
 		# слайдер: значение по позиции клика
 		var frac := ui.hover_row_frac
 		match row:
@@ -557,6 +586,8 @@ func _click_setting() -> void:
 				settings.sfx_volume = clampf(frac, 0.0, 1.0)
 			3:
 				settings.mouse_sensitivity = clampf(0.2 + frac * 2.3, 0.2, 2.5)
+			9:
+				settings.touch_scale = clampf(0.75 + frac * 1.05, 0.75, 1.8)
 		_apply_settings_live(row)
 		Audio.play("ui_move", 0.55, 1.0)
 	else:
@@ -566,10 +597,18 @@ func _apply_settings_live(row: int) -> void:
 	settings.save_settings()
 	if row <= 2:
 		settings.apply_audio()
-	elif row == 5 or row == 7:
+	elif row == 4:
+		Mats.set_quality(settings.quality)
 		settings.apply_video(get_viewport())
-	elif row == 6:
+		if touch != null:
+			touch.setup(self)
+	elif row == 6 or row == 8:
+		settings.apply_video(get_viewport())
+	elif row == 7:
 		player.flashlight.shadow_enabled = settings.flashlight_shadows
+	elif row == 9:
+		if touch != null:
+			touch.setup(self)
 
 func _close_settings() -> void:
 	settings.save_settings()
@@ -620,7 +659,12 @@ func _set_state(s: int) -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	else:
 		mouse_e_down = false
+		touch_e = false
+		touch_run = false
+		touch_aim = false
+		touch_look_enabled = false
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	transition_a = 1.0
 	_update_music_for_state()
 
 func _update_menu_hover() -> void:
@@ -648,7 +692,7 @@ func _update_menu_hover() -> void:
 				Audio.play("ui_move", 0.45, 1.0)
 		STATE_SETTINGS:
 			var idx := ui.hover_idx
-			if idx >= 0 and idx < SETTINGS_ROW_COUNT and idx != settings_idx:
+			if idx >= 0 and idx < settings_row_count() and idx != settings_idx:
 				settings_idx = idx
 				Audio.play("ui_move", 0.45, 1.0)
 		STATE_SAVE, STATE_LOAD:
@@ -672,7 +716,7 @@ func _update_music_for_state() -> void:
 			Audio.set_music("music_ambient")
 			Audio.music_energy = 1.0
 		STATE_PAUSE:
-			Audio.set_music("music_ambient")
+			# трек не меняем — приглушаем текущий (после паузы продолжится)
 			Audio.music_energy = 0.45
 
 func can_look() -> bool:
@@ -705,6 +749,7 @@ func start_game() -> void:
 	max_days = diff.days
 	day = 1
 	inv.clear()
+	player.set_held(0)
 	locks = [false, false, false]
 	lock4 = false
 	last_win = WIN_DOOR
@@ -798,9 +843,9 @@ func place_starting_traps() -> void:
 		placed += 1
 
 func respawn_player() -> void:
+	player.set_held(inv[0] if not inv.is_empty() else 0)
 	player.place_at(0, 5.5, 10.5, atan2(2.5, 0.5))
 	player.reset_state()
-	player.place_at(0, 5.5, 10.5, atan2(2.5, 0.5))
 	granny.spawn(world.levels[0], 24.5, 27.5, -PI * 0.5)
 	granny.trap_t = 10.0 + rng.randf() * 8.0
 	target_kind = 0
@@ -850,6 +895,7 @@ func _update_play(dt: float) -> void:
 	world.update_doors(dt)
 	_update_thrown(dt)
 	_update_atmosphere(dt)
+	_update_music_intensity()
 	cat.update(dt, self)
 
 	if player.hidden:
@@ -898,6 +944,18 @@ func _update_play(dt: float) -> void:
 		lightning_fx = 1.0
 		lightning_t = time + 30.0 + rng.randf() * 30.0
 		Audio.play("thunder", 0.55, 0.7 + rng.randf() * 0.4)
+
+func _update_music_intensity() -> void:
+	# Музыкальные состояния: эмбиент → напряжение (она рядом/что-то услышала)
+	# → погоня (преследует на том же этаже).
+	if Audio == null or player == null or granny == null:
+		return
+	var want := "music_ambient"
+	if granny.state == GrannyAI.CHASE and granny.level == player.level:
+		want = "music_chase"
+	elif (granny.state == GrannyAI.INVESTIGATE and granny.level == player.level) or granny.notice > 0.35:
+		want = "music_tension"
+	Audio.set_music(want)
 
 func _update_detect(dt: float) -> void:
 	var seen := granny.level == player.level and not player.hidden and (granny.state == GrannyAI.CHASE or granny.notice > 0.15)
@@ -980,6 +1038,8 @@ func remove_item(id: int) -> void:
 	var idx := inv.find(id)
 	if idx >= 0:
 		inv.remove_at(idx)
+	if player != null and player.held_id == id:
+		player.set_held(inv[0] if not inv.is_empty() else 0)
 
 func count_locks() -> int:
 	var n := 0
@@ -1193,6 +1253,7 @@ func update_interaction(dt: float) -> void:
 					emit_noise(player_local().x, player_local().y, 3.4, "обыск")
 					if c.item_id != Items.NONE:
 						inv.append(c.item_id)
+						player.set_held(c.item_id)
 						pickup_item = c.item_id
 						pickup_t = 2.4
 						player.act_push = maxf(player.act_push, 0.6)
