@@ -251,16 +251,16 @@ static func load_run(game: GrannyGame, slot: String) -> bool:
 	game.attic_alert_t = 0.0
 	game.lightning_t = game.time + 30.0 + game.rng.randf() * 30.0
 
-	# Контейнеры. v1: дом другой — раздаём предметы заново по seed.
+	# Контейнеры. v1: старый дом несовместим — предметы расставляем заново по плану.
 	# v2: восстанавливаем и содержимое, и флаги обыска.
 	for lv in game.world.levels:
 		for c in lv.containers:
 			c.searched = false
 	if old_format:
-		HouseData.distribute_items(game.world.levels, HouseData._data()["item_anchors"], game.seed)
+		HousePlan.reset_items(game.world.levels)
 	else:
 		# сначала очистить всё, потом нанести сохранённое
-		HouseData.distribute_items(game.world.levels, HouseData._data()["item_anchors"], game.seed)
+		HousePlan.reset_items(game.world.levels)
 		for cd in st.get("containers", []):
 			if typeof(cd) != TYPE_DICTIONARY:
 				continue

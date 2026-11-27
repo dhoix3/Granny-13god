@@ -2,8 +2,9 @@ extends RefCounted
 
 # Автотест: запускает игру, проходит ключевые механики и сохраняет скриншоты.
 # Запуск: Godot.exe --path . -- --autotest
-# Переработка 2: один предмет в руках, дроп на пол, люки из house.json,
-# миграция сейвов v1→v2, парящий предмет, амбиент/окклюзия.
+# Переработка 2/3: один предмет в руках, дроп на пол, фиксированная
+# планировка (scenes/house.scn + house_plan.gd), миграция сейвов v1→v2,
+# парящий предмет, амбиент/окклюзия, детерминизм дома между запусками.
 
 var g: GrannyGame
 var checks := 0
@@ -21,7 +22,7 @@ func run(pgame: GrannyGame) -> void:
 	_check(g.player != null and g.granny != null and g.cat != null, "actors created")
 	_check(g.ui != null, "ui created")
 
-	# --- планировка из house.json ---
+	# --- фиксированная планировка (план + запечённая сцена) ---
 	var lv0: LevelData = g.world.levels[0]
 	_check(lv0.containers.size() >= 12, "house has containers (%d)" % lv0.containers.size())
 	_check(lv0.doors.size() >= 10, "house has doors (%d)" % lv0.doors.size())
@@ -164,7 +165,7 @@ func run(pgame: GrannyGame) -> void:
 		if c.item_id != Items.NONE:
 			cont = c
 			break
-	_check(cont != null, "seed distribution places an item in house")
+	_check(cont != null, "fixed plan places items in the house")
 	if cont != null:
 		var found_id := int(cont.item_id)
 		# 1) руки заняты — предмет остаётся в контейнере
@@ -251,7 +252,7 @@ func run(pgame: GrannyGame) -> void:
 	g.clear_ground_items()
 	g.drop_held(true)
 
-	# --- люки: переходы по данным house.json ---
+	# --- люки: переходы по фиксированному плану ---
 	g.player.place_at(0, 11.5, 2.5, 0.0)
 	g.switch_level()
 	await _frames(3)
@@ -836,6 +837,43 @@ func run(pgame: GrannyGame) -> void:
 	tc.queue_free()
 	g.touch = null
 	g.touch_e = false
+	# --- ФИКСИРОВАННАЯ ПЛАНИРОВКА: повторный старт даёт тот же дом ---
+	# два ПОЛНЫХ старта игры: раскладка предметов и капканов совпадает
+	g.diff_index = 1
+	g.start_game()
+	g._set_state(g.STATE_PLAY)
+	g.fade_t = 0.0
+	var snap_a := []
+	for lvx in g.world.levels:
+		for c in lvx.containers:
+			snap_a.append("%d:%d:%d:%d" % [lvx.id, c.x, c.y, int(c.item_id)])
+	var traps_a := []
+	for t in g.world.levels[0].traps:
+		traps_a.append("%0.1f:%0.1f" % [t.x, t.y])
+	g.start_game()
+	g._set_state(g.STATE_PLAY)
+	g.fade_t = 0.0
+	var snap_b := []
+	for lvx in g.world.levels:
+		for c in lvx.containers:
+			snap_b.append("%d:%d:%d:%d" % [lvx.id, c.x, c.y, int(c.item_id)])
+	var traps_b := []
+	for t in g.world.levels[0].traps:
+		traps_b.append("%0.1f:%0.1f" % [t.x, t.y])
+	_check(str(snap_a) == str(snap_b), "fixed items identical between runs")
+	_check(str(traps_a) == str(traps_b), "fixed traps identical between runs")
+	_check(traps_b.size() == 3, "normal difficulty places 3 plan traps (%d)" % traps_b.size())
+	var plan_spots: Array = HousePlan.PLAN["trap_spots"]
+	var all_on_plan := true
+	for t in g.world.levels[0].traps:
+		var on_plan := false
+		for s in plan_spots:
+			if int(s[0]) + 0.5 == t.x and int(s[1]) + 0.5 == t.y:
+				on_plan = true
+		if not on_plan:
+			all_on_plan = false
+	_check(all_on_plan, "every trap sits on a plan spot")
+
 	# замер CPU-времени кадра (headless = физика+скрипты, без рендера)
 	var times: Array[float] = []
 	for i in 240:

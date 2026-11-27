@@ -87,7 +87,7 @@ func occlusion_factor(level: LevelData, from: Vector2, to: Vector2) -> float:
 		return 1.0
 	return 0.45
 
-# Мировой звук в точке уровня. root — корень уровня (WorldBuilder.get_root),
+# Мировой звук в точке уровня. root — корень уровня (HouseWorld.get_root),
 # local_pos — координаты внутри уровня. occ — готовый фактор приглушения.
 func play3d(sound: String, root: Node3D, local_pos: Vector3, volume: float = 1.0, pitch: float = 1.0, unit_size: float = 7.0, max_dist: float = 0.0, occ: float = 1.0) -> void:
 	if not enabled or root == null or not root.is_inside_tree():

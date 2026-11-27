@@ -1,58 +1,48 @@
-class_name WorldBuilder
-extends Node3D
+class_name HouseGeometry
+extends RefCounted
+
+# Офлайн-строитель геометрии фиксированного дома.
+# Используется ТОЛЬКО tools/bake_house.gd для запекания scenes/house.scn;
+# в рантайме игры не загружается — игра грузит готовую сцену
+# (scripts/house_world.gd). Материалы не назначаются: вместо этого каждый
+# меш несёт метаданные "mat" с именем материала; профили качества
+# применяются в рантайме (scripts/materials.gd, scripts/house_world.gd).
 
 const WALL_H := 2.60
 
-var levels: Array[LevelData] = []
-var roots: Array[Node3D] = []
-var seed := 1
-
-var door_entries: Array[Dictionary] = []
-var front_entry: Dictionary = {}
-var lock_meshes: Array[MeshInstance3D] = []
-var garage_node: Node3D = null
-var garage_shape: CollisionShape3D = null
-var garage_open := false
-var garage_t := 0.0
-
-var spider_nodes: Array[Node3D] = []
-var web_nodes: Array[Node3D] = []
-var lamp_lights: Array[OmniLight3D] = []
-var _sts: Dictionary = {}
-var _web_tex: ImageTexture = null
-var _box_shape: BoxShape3D = null
+# Детализация запекается в полном объёме; профили качества меняют только
+# материалы и тени в рантайме.
+const DETAIL_FULL := true
 
 # Не более 8 реальных OmniLight на этаж (лимит кластерного рендера на Android):
 # остальные лампы — только светящиеся плафоны без источника света.
 const MAX_REAL_LIGHTS := 8
 
-func build(pseed: int) -> void:
-	seed = pseed
-	levels = HouseData.build_levels(pseed)
+var _sts: Dictionary = {}
+var _web_tex: ImageTexture = null
+var _box_shape: BoxShape3D = null
+
+
+func build(levels_in: Array[LevelData]) -> Node3D:
+	# Строит фиксированную геометрию дома из готовых LevelData (план).
+	# Вызывается ТОЛЬКО офлайн-инструментом tools/bake_house.gd.
+	var house := Node3D.new()
+	house.name = "House"
 	_box_shape = BoxShape3D.new()
 	_box_shape.size = Vector3(1.0, WALL_H, 1.0)
-	for i in levels.size():
-		var lv := levels[i]
+	for i in levels_in.size():
+		var lv := levels_in[i]
 		var root := Node3D.new()
 		root.name = "Level%d_%s" % [i, lv.name]
 		root.position = lv.origin
-		add_child(root)
-		roots.append(root)
+		house.add_child(root)
 		_build_shell(lv, root)
 		_build_decos(lv, root)
 		_build_lamps(lv, root)
-		_build_traps(lv, root)
 		_build_webs(lv, root)
 		_build_hatches(lv, root)
-		if lv.spiders.size() > 0:
-			_build_spiders(lv, root)
-	if front_entry.size() > 0:
-		set_front_locks(0)
+	return house
 
-func get_root(id: int) -> Node3D:
-	if id < 0 or id >= roots.size():
-		return roots[0]
-	return roots[id]
 
 func _st(mat_name: String) -> SurfaceTool:
 	if not _sts.has(mat_name):
@@ -60,6 +50,7 @@ func _st(mat_name: String) -> SurfaceTool:
 		st.begin(Mesh.PRIMITIVE_TRIANGLES)
 		_sts[mat_name] = st
 	return _sts[mat_name]
+
 
 func _flush_surfaces(root: Node3D) -> void:
 	for key in _sts.keys():
@@ -70,9 +61,10 @@ func _flush_surfaces(root: Node3D) -> void:
 		var mi := MeshInstance3D.new()
 		mi.name = "Shell_" + str(key)
 		mi.mesh = mesh
-		mi.material_override = Mats.mat(str(key))
+		mi.set_meta("mat", str(key))
 		root.add_child(mi)
 	_sts.clear()
+
 
 func _world_uv(p: Vector3, n: Vector3, s: float) -> Vector2:
 	if absf(n.x) > 0.5:
@@ -80,6 +72,7 @@ func _world_uv(p: Vector3, n: Vector3, s: float) -> Vector2:
 	if absf(n.z) > 0.5:
 		return Vector2(p.x, p.y) * s
 	return Vector2(p.x, p.z) * s
+
 
 func _uv_scale(mat_name: String) -> float:
 	match mat_name:
@@ -93,6 +86,7 @@ func _uv_scale(mat_name: String) -> float:
 		"wood": return 0.50
 		"concrete": return 0.50
 	return 0.0
+
 
 func _quad(st: SurfaceTool, p0: Vector3, u: Vector3, v: Vector3, n: Vector3, uv_scale := 0.0, ao: Array = [1.0, 1.0, 1.0, 1.0]) -> void:
 	var p1 := p0 + v
@@ -133,12 +127,15 @@ func _quad(st: SurfaceTool, p0: Vector3, u: Vector3, v: Vector3, n: Vector3, uv_
 	st.set_uv(uv3)
 	st.add_vertex(p3)
 
+
 func _set_ao(st: SurfaceTool, v: float) -> void:
 	v = clampf(float(v), 0.35, 1.0)
 	st.set_color(Color(v, v, v))
 
 # AO угла пола/потолка: темнее, если соседние плитки — стены.
 # corner: 0..1 по каждой оси (какой угол плитки).
+
+
 func _corner_ao(lv: LevelData, x: int, y: int, cx: int, cy: int, k: float) -> float:
 	var cnt := 0
 	for d in [Vector2i(cx - 1, cy - 1), Vector2i(cx - 1, cy), Vector2i(cx, cy - 1)]:
@@ -147,6 +144,7 @@ func _corner_ao(lv: LevelData, x: int, y: int, cx: int, cy: int, k: float) -> fl
 			cnt += 1
 	return 1.0 - k * float(cnt)
 
+
 func _floor_ao(lv: LevelData, x: int, y: int, k: float) -> Array:
 	return [
 		_corner_ao(lv, x, y, 0, 0, k),
@@ -154,6 +152,7 @@ func _floor_ao(lv: LevelData, x: int, y: int, k: float) -> Array:
 		_corner_ao(lv, x, y, 1, 1, k),
 		_corner_ao(lv, x, y, 0, 1, k),
 	]
+
 
 func _tile_mat(t: int) -> String:
 	match t:
@@ -173,8 +172,10 @@ func _tile_mat(t: int) -> String:
 		LevelData.PLASTER: return "plaster"
 	return "plaster"
 
+
 func _is_opening(t: int) -> bool:
 	return t == LevelData.DOOR or t == LevelData.FRONT or t == LevelData.GARAGE_DOOR
+
 
 func _build_shell(lv: LevelData, root: Node3D) -> void:
 	var wall_body := StaticBody3D.new()
@@ -237,6 +238,7 @@ func _build_shell(lv: LevelData, root: Node3D) -> void:
 				_build_garage(lv, root, x, y, wall_body)
 	_flush_surfaces(root)
 
+
 func _floor_name(t: int, level_id: int) -> String:
 	if t == LevelData.RUG:
 		return "rug"
@@ -252,6 +254,7 @@ func _floor_name(t: int, level_id: int) -> String:
 		return "concrete"
 	return "wood"
 
+
 func _door_axis(lv: LevelData, x: int, y: int) -> String:
 	var sx := LevelData.SOLID[lv.get_tile(x - 1, y)] and LevelData.SOLID[lv.get_tile(x + 1, y)]
 	var sz := LevelData.SOLID[lv.get_tile(x, y - 1)] and LevelData.SOLID[lv.get_tile(x, y + 1)]
@@ -259,17 +262,16 @@ func _door_axis(lv: LevelData, x: int, y: int) -> String:
 		return "z"
 	return "x"
 
+
 func _build_door(lv: LevelData, root: Node3D, x: int, y: int, front: bool, wall_body: StaticBody3D) -> void:
 	var door := lv.door_at(x, y)
 	if door == null:
-		door = LevelData.Door.new()
-		door.x = x
-		door.y = y
-		door.front = front
-		lv.doors.append(door)
+		push_error("bake: дверь (%d,%d) отсутствует в плане" % [x, y])
+		return
 	var axis := _door_axis(lv, x, y)
 	var pivot := Node3D.new()
 	pivot.name = "Door_%d_%d" % [x, y]
+	pivot.set_meta("axis", axis)
 	root.add_child(pivot)
 	var body := StaticBody3D.new()
 	pivot.add_child(body)
@@ -282,7 +284,7 @@ func _build_door(lv: LevelData, root: Node3D, x: int, y: int, front: bool, wall_
 		bm.size = Vector3(0.92, 2.06, 0.07)
 		leaf = MeshInstance3D.new()
 		leaf.mesh = bm
-		leaf.material_override = Mats.mat(mat_name)
+		leaf.set_meta("mat", mat_name)
 		leaf.position = Vector3(0.46, 1.03, 0)
 		pivot.add_child(leaf)
 		shape.size = Vector3(0.92, 2.06, 0.07)
@@ -305,7 +307,7 @@ func _build_door(lv: LevelData, root: Node3D, x: int, y: int, front: bool, wall_
 		bm.size = Vector3(0.07, 2.06, 0.92)
 		leaf = MeshInstance3D.new()
 		leaf.mesh = bm
-		leaf.material_override = Mats.mat(mat_name)
+		leaf.set_meta("mat", mat_name)
 		leaf.position = Vector3(0, 1.03, 0.46)
 		pivot.add_child(leaf)
 		shape.size = Vector3(0.07, 2.06, 0.92)
@@ -330,25 +332,15 @@ func _build_door(lv: LevelData, root: Node3D, x: int, y: int, front: bool, wall_
 	lcs.position = Vector3(x + 0.5, 2.08 + (WALL_H - 2.08) * 0.5, y + 0.5)
 	lintel.add_child(lcs)
 	_box(root, Vector3(1.0, WALL_H - 2.08, 1.0), Vector3(x + 0.5, 2.08 + (WALL_H - 2.08) * 0.5, y + 0.5), "plaster")
-	var entry := {
-		"door": door,
-		"pivot": pivot,
-		"base": 0.0,
-		"sign": 1.0 if axis == "x" else 1.0,
-		"body": body,
-		"shape": body.get_child(0),
-		"axis": axis,
-	}
-	door_entries.append(entry)
 	if front:
-		front_entry = entry
-		# three padlocks on the inside face
+		# три навесных замка на внутренней стороне двери
 		for i in 3:
 			var lm := _box(leaf, Vector3(0.10, 0.13, 0.08), Vector3(0.78, 1.45 - i * 0.24, -0.06), "lock")
-			lock_meshes.append(lm)
+			lm.name = "Lock_%d" % i
+
 
 func _build_garage(lv: LevelData, root: Node3D, x: int, y: int, _wall_body: StaticBody3D) -> void:
-	if garage_node != null:
+	if root.find_child("GarageDoor", true, false) != null:
 		return
 	# ворота: центр и ширина по непрерывной полосе плит GARAGE_DOOR
 	var min_x := x
@@ -359,30 +351,33 @@ func _build_garage(lv: LevelData, root: Node3D, x: int, y: int, _wall_body: Stat
 		max_x += 1
 	var span := float(max_x - min_x + 1)
 	var cx := float(min_x) + span * 0.5
-	garage_node = Node3D.new()
-	garage_node.name = "GarageDoor"
-	garage_node.position = Vector3(cx, 0, y + 0.5)
-	root.add_child(garage_node)
+	var gn := Node3D.new()
+	gn.name = "GarageDoor"
+	gn.position = Vector3(cx, 0, y + 0.5)
+	root.add_child(gn)
 	var bm := BoxMesh.new()
 	bm.size = Vector3(span, WALL_H, 0.14)
 	var mi := MeshInstance3D.new()
 	mi.mesh = bm
-	mi.material_override = Mats.mat("garage_door")
+	mi.set_meta("mat", "garage_door")
 	mi.position = Vector3(0, WALL_H * 0.5, 0)
-	garage_node.add_child(mi)
+	gn.add_child(mi)
 	var stripes := int(span * 2.0)
 	for i in stripes:
-		_box(garage_node, Vector3(span - 0.1, 0.05, 0.17), Vector3(0, 0.25 + i * 0.42, 0), "metal")
+		_box(gn, Vector3(span - 0.1, 0.05, 0.17), Vector3(0, 0.25 + i * 0.42, 0), "metal")
 	var body := StaticBody3D.new()
-	garage_node.add_child(body)
+	gn.add_child(body)
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(span, WALL_H, 0.14)
-	garage_shape = CollisionShape3D.new()
-	garage_shape.shape = shape
-	garage_shape.position = Vector3(0, WALL_H * 0.5, 0)
-	body.add_child(garage_shape)
+	var gs := CollisionShape3D.new()
+	gs.name = "GarageCollider"
+	gs.shape = shape
+	gs.position = Vector3(0, WALL_H * 0.5, 0)
+	body.add_child(gs)
 
 # Люки и лестницы: деревянная окантовка проёма и ступени, уходящие в темноту.
+
+
 func _build_hatches(lv: LevelData, root: Node3D) -> void:
 	for h in lv.hatches:
 		var hx := float(h["x"])
@@ -399,31 +394,6 @@ func _build_hatches(lv: LevelData, root: Node3D) -> void:
 		for i in 4:
 			_box(rim, Vector3(0.72, 0.05, 0.16), Vector3(0, -0.16 - i * 0.24, -0.28 + i * 0.17), wood)
 
-func set_garage_open(v: bool) -> void:
-	garage_open = v
-
-func update_doors(dt: float) -> void:
-	for e in door_entries:
-		var d: LevelData.Door = e.door
-		var target := 1.0 if d.open else 0.0
-		var spd := 3.0 if target > d.open_t else 4.5
-		d.open_t = move_toward(d.open_t, target, dt * spd)
-		var pivot: Node3D = e.pivot
-		pivot.rotation.y = float(e.base) + float(e.sign) * d.open_t * PI * 0.5
-		var sh: CollisionShape3D = e.shape
-		sh.disabled = d.open_t > 0.10
-	if garage_node != null:
-		var target := 1.0 if garage_open else 0.0
-		garage_t = move_toward(garage_t, target, dt * 1.4)
-		garage_node.position.y = lerpf(0.0, 2.75, garage_t)
-		if garage_shape != null:
-			garage_shape.disabled = garage_t > 0.04
-
-func set_front_locks(opened: int) -> void:
-	for i in lock_meshes.size():
-		lock_meshes[i].visible = i >= opened
-
-# ------------------------------------------------------------------ furniture
 
 func _front_dir(rot: int) -> Vector3:
 	match rot % 4:
@@ -432,16 +402,18 @@ func _front_dir(rot: int) -> Vector3:
 		2: return Vector3(0, 0, 1)
 	return Vector3(1, 0, 0)
 
+
 func _box(parent: Node3D, size: Vector3, pos: Vector3, mat_name: String, rot_y: float = 0.0) -> MeshInstance3D:
 	var bm := BoxMesh.new()
 	bm.size = size
 	var mi := MeshInstance3D.new()
 	mi.mesh = bm
-	mi.material_override = Mats.mat(mat_name)
+	mi.set_meta("mat", mat_name)
 	mi.position = pos
 	mi.rotation.y = rot_y
 	parent.add_child(mi)
 	return mi
+
 
 func _cyl(parent: Node3D, radius: float, height: float, pos: Vector3, mat_name: String, rot_x: float = 0.0, rot_z: float = 0.0) -> MeshInstance3D:
 	var cm := CylinderMesh.new()
@@ -451,18 +423,20 @@ func _cyl(parent: Node3D, radius: float, height: float, pos: Vector3, mat_name: 
 	cm.radial_segments = 14
 	var mi := MeshInstance3D.new()
 	mi.mesh = cm
-	mi.material_override = Mats.mat(mat_name)
+	mi.set_meta("mat", mat_name)
 	mi.position = pos
 	mi.rotation.x = rot_x
 	mi.rotation.z = rot_z
 	parent.add_child(mi)
 	return mi
 
+
 func _front_panel(parent: Node3D, d: LevelData.Deco, width: float, height: float, y: float, dist: float, mat_name: String) -> MeshInstance3D:
 	var f := _front_dir(d.rot)
 	if absf(f.z) > 0.5:
 		return _box(parent, Vector3(width, height, 0.045), Vector3(0, y, f.z * dist), mat_name)
 	return _box(parent, Vector3(0.045, height, width), Vector3(f.x * dist, y, 0), mat_name)
+
 
 func _deco_height(d: LevelData.Deco) -> float:
 	if d.is_car:
@@ -494,6 +468,7 @@ func _deco_height(d: LevelData.Deco) -> float:
 		22: return 0.84
 	return 0.8
 
+
 func _build_decos(lv: LevelData, root: Node3D) -> void:
 	var body := StaticBody3D.new()
 	body.name = "DecoCollision"
@@ -503,7 +478,6 @@ func _build_decos(lv: LevelData, root: Node3D) -> void:
 		n.name = "Deco_%s" % d.name
 		n.position = Vector3(d.x, 0, d.y)
 		root.add_child(n)
-		d.node = n
 		if d.is_car:
 			_build_car(n, d)
 		elif d.is_cradle:
@@ -529,6 +503,7 @@ func _build_decos(lv: LevelData, root: Node3D) -> void:
 			cs.shape = shape
 			cs.position = Vector3(d.x, cy, d.y)
 			body.add_child(cs)
+
 
 func _build_furn(n: Node3D, d: LevelData.Deco) -> void:
 	var w := d.rx * 2.0
@@ -679,7 +654,7 @@ func _build_furn(n: Node3D, d: LevelData.Deco) -> void:
 			# угли: светящаяся россыпь
 			var embers := _front_panel(n, d, w * 0.46, 0.05, 0.13, dep * 0.5 - 0.10, "ember")
 			embers.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			if Mats.quality() >= 1:
+			if DETAIL_FULL:
 				var glow := OmniLight3D.new()
 				glow.position = Vector3(0, 0.35, 0.2)
 				glow.light_color = Color(1.0, 0.45, 0.16)
@@ -708,6 +683,7 @@ func _build_furn(n: Node3D, d: LevelData.Deco) -> void:
 			_cyl(n, minf(w, dep) * 0.42, 0.07, Vector3(f.x * dep * 0.10, 0.42, f.z * dep * 0.10), "white")
 			_cyl(n, minf(w, dep) * 0.30, 0.02, Vector3(f.x * dep * 0.10, 0.46, f.z * dep * 0.10), "hole")
 
+
 func _build_car(n: Node3D, _d: LevelData.Deco) -> void:
 	# Body and chassis.
 	_box(n, Vector3(4.1, 0.52, 1.68), Vector3(0, 0.58, 0), "car")
@@ -732,6 +708,7 @@ func _build_car(n: Node3D, _d: LevelData.Deco) -> void:
 	_box(n, Vector3(0.05, 0.16, 0.10), Vector3(-2.0, 0.62, 0.62), "red")
 	_box(n, Vector3(0.05, 0.16, 0.10), Vector3(-2.0, 0.62, -0.62), "red")
 
+
 func _build_cradle(n: Node3D, d: LevelData.Deco) -> void:
 	var w := d.rx * 2.0
 	var dep := d.ry * 2.0
@@ -745,75 +722,6 @@ func _build_cradle(n: Node3D, d: LevelData.Deco) -> void:
 
 # ------------------------------------------------------------------ lamps, traps, webs, spiders
 
-func _build_lamps(lv: LevelData, root: Node3D) -> void:
-	var real := 0
-	for p in lv.lamps:
-		var pos := Vector3(p.x, p.y, p.z)
-		var bulb := _cyl(root, 0.055, 0.10, pos, "lamp")
-		bulb.rotation = Vector3.ZERO
-		_cyl(root, 0.012, maxf(0.05, WALL_H - p.y), Vector3(p.x, (WALL_H + p.y) * 0.5, p.z), "black")
-		var shade := _cyl(root, 0.18, 0.10, Vector3(p.x, p.y + 0.09, p.z), "metal")
-		shade.rotation = Vector3.ZERO
-		# на мобильном рендере число источников на объект ограничено:
-		# часть ламп — «выгоревшие», только плафон (атмосферно и дёшево)
-		var flicker := false
-		if real < MAX_REAL_LIGHTS:
-			real += 1
-			flicker = real == 1 or real == 5
-			var light := OmniLight3D.new()
-			light.position = Vector3(p.x, p.y - 0.08, p.z)
-			light.light_color = Color(1.0, 0.74, 0.42)
-			light.light_energy = 2.0
-			light.omni_range = 8.0
-			light.omni_attenuation = 1.15
-			light.shadow_enabled = Mats.quality() >= 2
-			light.shadow_bias = 0.04
-			light.set_meta("flicker", flicker)
-			root.add_child(light)
-			lamp_lights.append(light)
-
-func make_trap_node(lv: LevelData, trap: LevelData.Trap) -> Node3D:
-	var root := get_root(lv.id)
-	var node := TrapNode.new()
-	node.name = "Trap"
-	node.position = Vector3(trap.x, 0.02, trap.y)
-	root.add_child(node)
-	_cyl(node, 0.20, 0.025, Vector3.ZERO, "metal")
-	var jaw_l := Node3D.new()
-	jaw_l.position = Vector3(0, 0.03, 0)
-	node.add_child(jaw_l)
-	var jaw_r := Node3D.new()
-	jaw_r.position = Vector3(0, 0.03, 0)
-	node.add_child(jaw_r)
-	for i in 5:
-		var a := -0.55 + i * 0.275
-		_box(jaw_l, Vector3(0.04, 0.05, 0.20), Vector3(cos(a) * 0.14, 0, sin(a) * 0.14), "trap", a)
-		_box(jaw_r, Vector3(0.04, 0.05, 0.20), Vector3(cos(a) * 0.14, 0, -sin(a) * 0.14), "trap", -a)
-	node.jaw_l = jaw_l
-	node.jaw_r = jaw_r
-	node.set_armed(trap.armed)
-	trap.node = node
-	return node
-
-func _build_traps(lv: LevelData, _root: Node3D) -> void:
-	for t in lv.traps:
-		make_trap_node(lv, t)
-
-func add_trap(lv: LevelData, x: float, y: float) -> LevelData.Trap:
-	var trap := LevelData.Trap.new()
-	trap.x = x
-	trap.y = y
-	lv.traps.append(trap)
-	make_trap_node(lv, trap)
-	return trap
-
-func clear_traps() -> void:
-	for lv in levels:
-		for t in lv.traps:
-			if t.node != null:
-				t.node.queue_free()
-				t.node = null
-		lv.traps.clear()
 
 func _web_texture() -> ImageTexture:
 	if _web_tex != null:
@@ -843,6 +751,7 @@ func _web_texture() -> ImageTexture:
 	_web_tex = ImageTexture.create_from_image(img)
 	return _web_tex
 
+
 func _build_webs(lv: LevelData, root: Node3D) -> void:
 	for w in lv.webs:
 		var quad := QuadMesh.new()
@@ -857,39 +766,36 @@ func _build_webs(lv: LevelData, root: Node3D) -> void:
 		m.albedo_color = Color(1, 1, 1, 0.58)
 		m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		mi.material_override = m
+		mi.set_meta("web", true)  # материал запечён целиком, рантайм не меняет его
 		mi.position = Vector3(w.position.x + w.size.x * 0.5, 0.03, w.position.y + w.size.y * 0.5)
 		mi.rotation.x = -PI * 0.5
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		root.add_child(mi)
-		web_nodes.append(mi)
 
-func _build_spiders(lv: LevelData, root: Node3D) -> void:
-	for p in lv.spiders:
-		var n := Node3D.new()
-		n.name = "Spider"
-		n.position = Vector3(p.x, 0.06, p.y)
-		root.add_child(n)
-		var body := SphereMesh.new()
-		body.radius = 0.20
-		body.height = 0.28
-		var bmi := MeshInstance3D.new()
-		bmi.mesh = body
-		bmi.material_override = Mats.mat("black")
-		bmi.position = Vector3(0, 0.18, 0)
-		n.add_child(bmi)
-		var head := SphereMesh.new()
-		head.radius = 0.10
-		head.height = 0.14
-		var hmi := MeshInstance3D.new()
-		hmi.mesh = head
-		hmi.material_override = Mats.mat("black")
-		hmi.position = Vector3(0.20, 0.17, 0)
-		n.add_child(hmi)
-		for i in 4:
-			for side in [-1.0, 1.0]:
-				var a := (i - 1.5) * 0.42
-				_box(n, Vector3(0.045, 0.035, 0.36), Vector3(cos(a) * 0.20, 0.08, side * 0.18), "black", a)
-		_box(n, Vector3(0.03, 0.03, 0.03), Vector3(0.28, 0.20, 0.04), "eye")
-		_box(n, Vector3(0.03, 0.03, 0.03), Vector3(0.28, 0.20, -0.04), "eye")
-		n.set_meta("base", n.position)
-		spider_nodes.append(n)
+
+func _build_lamps(lv: LevelData, root: Node3D) -> void:
+	var real := 0
+	for p in lv.lamps:
+		var pos := Vector3(p.x, p.y, p.z)
+		var bulb := _cyl(root, 0.055, 0.10, pos, "lamp")
+		bulb.rotation = Vector3.ZERO
+		_cyl(root, 0.012, maxf(0.05, WALL_H - p.y), Vector3(p.x, (WALL_H + p.y) * 0.5, p.z), "black")
+		var shade := _cyl(root, 0.18, 0.10, Vector3(p.x, p.y + 0.09, p.z), "metal")
+		shade.rotation = Vector3.ZERO
+		# на мобильном рендере число источников на объект ограничено:
+		# часть ламп — «выгоревшие», только плафон (атмосферно и дёшево)
+		var flicker := false
+		if real < MAX_REAL_LIGHTS:
+			real += 1
+			flicker = real == 1 or real == 5
+			var light := OmniLight3D.new()
+			light.position = Vector3(p.x, p.y - 0.08, p.z)
+			light.light_color = Color(1.0, 0.74, 0.42)
+			light.light_energy = 2.0
+			light.omni_range = 8.0
+			light.omni_attenuation = 1.15
+			light.shadow_enabled = false
+			light.shadow_bias = 0.04
+			light.set_meta("flicker", flicker)
+			root.add_child(light)
+

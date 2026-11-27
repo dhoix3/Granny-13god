@@ -56,7 +56,7 @@ class DiffData:
 		stagger = pstagger
 		god_mode = pgod
 
-var world: WorldBuilder
+var world: HouseWorld
 var player: PlayerBody
 var granny: GrannyAI
 var cat: CatAI
@@ -160,10 +160,10 @@ func _ready() -> void:
 	diff = diffs[diff_index]
 	_setup_environment()
 
-	world = WorldBuilder.new()
+	world = HouseWorld.new()
 	world.name = "World"
 	add_child(world)
-	world.build(seed)
+	world.build()
 
 	player = PlayerBody.new()
 	player.name = "Player"
@@ -803,8 +803,8 @@ func start_game() -> void:
 			t.queue_free()
 	throwns.clear()
 	world.clear_traps()
-	# свежая раздача предметов по seed (детерминированная)
-	HouseData.distribute_items(world.levels, HouseData._data()["item_anchors"], seed)
+	# предметы всегда по фиксированному плану — планировка никогда не меняется
+	HousePlan.reset_items(world.levels)
 	for lv in world.levels:
 		for c in lv.containers:
 			c.searched = false
@@ -820,47 +820,27 @@ func start_game() -> void:
 	_set_state(STATE_INTRO)
 
 func place_starting_traps() -> void:
+	# Капканы стоят в заранее спроектированных точках фиксированного плана;
+	# сложность задаёт только их количество (первые N списка) — планировка
+	# дома и положение капканов никогда не меняются между прохождениями.
 	var lv: LevelData = world.levels[0]
-	var valid: Array[Vector2i] = []
-	for y in range(2, 30):
-		for x in range(2, 30):
-			var t := lv.get_tile(x, y)
-			if t != LevelData.FLOOR and t != LevelData.RUG:
-				continue
-			if lv.door_at(x, y) != null:
-				continue
-			if absi(x - 17) <= 2 and absi(y - 28) <= 2:
-				continue
-			if absi(x - 24) <= 2 and absi(y - 27) <= 2:
-				continue
-			valid.append(Vector2i(x, y))
-	var trng := RandomNumberGenerator.new()
-	trng.seed = seed * 1000 + 7
-	for i in range(valid.size() - 1, 0, -1):
-		var j := trng.randi_range(0, i)
-		var tmp := valid[i]
-		valid[i] = valid[j]
-		valid[j] = tmp
-	var n := mini(diff.traps, valid.size())
-	var placed := 0
-	for p in valid:
-		if placed >= n:
-			break
-		var too_close := false
-		for t in lv.traps:
-			if Vector2(p.x + 0.5 - t.x, p.y + 0.5 - t.y).length() < 2.5:
-				too_close = true
-				break
-		if too_close:
+	var spots: Array = HousePlan.PLAN["trap_spots"]
+	var n := mini(diff.traps, spots.size())
+	for i in n:
+		var s: Array = spots[i]
+		var gx := int(s[0])
+		var gy := int(s[1])
+		# страховка от опечатки в плане; полноту проверяет logic_check.py
+		if lv.solid_at(gx, gy) or lv.door_at(gx, gy) != null:
 			continue
-		world.add_trap(lv, p.x + 0.5, p.y + 0.5)
-		placed += 1
+		world.add_trap(lv, float(gx) + 0.5, float(gy) + 0.5)
 
 func respawn_player() -> void:
 	var lv: LevelData = world.levels[0]
 	player.place_at(0, lv.spawn_x, lv.spawn_y, lv.spawn_a)
 	player.reset_state()
-	granny.spawn(world.levels[0], 24.5, 27.5, -PI * 0.5)
+	var gs: Dictionary = HousePlan.granny_start()
+	granny.spawn(world.levels[int(gs["lv"])], float(gs["x"]), float(gs["y"]), float(gs["a"]))
 	granny.trap_t = 10.0 + rng.randf() * 8.0
 	target_kind = 0
 	target_obj = null
@@ -1613,7 +1593,7 @@ func exit_hide() -> void:
 	var pl := player_local()
 	emit_noise(pl.x, pl.y, 2.4, "шкаф")
 
-# Люк (лестница) на тайле: данные из house.json.
+# Люк (лестница) на тайле: данные фиксированного плана.
 func hatch_at(lv: LevelData, x: int, y: int) -> Dictionary:
 	for h in lv.hatches:
 		if int(h["x"]) == x and int(h["y"]) == y:

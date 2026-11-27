@@ -1,4 +1,24 @@
-{
+class_name HousePlan
+extends RefCounted
+
+# ФИКСИРОВАННАЯ ПЛАНИРОВКА ДОМА — вручную спроектирована, НЕ генерируется.
+#
+# Единственный источник правды о доме. Каждый тайл сетки, дверь, мебель,
+# лампа, люк, предмет и точка капкана заданы явно и одинаковы при каждом
+# запуске новой игры. Никакой случайности и никакой процедурной сборки:
+# геометрия дома запечена в сцену scenes/house.scn (tools/bake_house.gd),
+# а этот файл даёт логике игры данные: тайлы для коллизий/AI-навигации,
+# контейнеры, укрытия, двери, люки, фиксированные предметы и капканы.
+#
+# Изменить планировку можно ТОЛЬКО редактированием этого файла (или
+# правкой scenes/house.scn) с последующей перепроверкой:
+#   python3 tests/logic_check.py            — статическая проверка плана
+#   godot --headless --path . --script res://tools/bake_house.gd
+#                                           — перезапекание сцены
+# Формат блока PLAN — JSON (его читает tests/logic_check.py без Godot).
+
+# >>>PLAN_PY (начало машинно-читаемых данных; tests/logic_check.py парсит JSON)
+const PLAN := {
  "legend": {
   "#": 3,
   "W": 1,
@@ -667,7 +687,79 @@
     "x": 17.5,
     "y": 28.5,
     "a": -1.5707963
-   }
+   },
+   "room_rects": [
+    {
+     "name": "Спальня",
+     "x": 2,
+     "y": 2,
+     "w": 8,
+     "h": 8
+    },
+    {
+     "name": "Коридор",
+     "x": 11,
+     "y": 2,
+     "w": 2,
+     "h": 18
+    },
+    {
+     "name": "Кухня",
+     "x": 14,
+     "y": 2,
+     "w": 8,
+     "h": 8
+    },
+    {
+     "name": "Кладовая",
+     "x": 23,
+     "y": 2,
+     "w": 7,
+     "h": 8
+    },
+    {
+     "name": "Кабинет",
+     "x": 2,
+     "y": 11,
+     "w": 8,
+     "h": 9
+    },
+    {
+     "name": "Столовая",
+     "x": 14,
+     "y": 11,
+     "w": 8,
+     "h": 9
+    },
+    {
+     "name": "Ванная",
+     "x": 23,
+     "y": 20,
+     "w": 7,
+     "h": 10
+    },
+    {
+     "name": "Прихожая",
+     "x": 14,
+     "y": 20,
+     "w": 7,
+     "h": 10
+    },
+    {
+     "name": "Тайная кладовка",
+     "x": 2,
+     "y": 21,
+     "w": 4,
+     "h": 3
+    },
+    {
+     "name": "Гостиная",
+     "x": 2,
+     "y": 25,
+     "w": 8,
+     "h": 5
+    }
+   ]
   },
   {
    "id": 1,
@@ -867,7 +959,16 @@
     "x": 4.5,
     "y": 19.5,
     "a": -1.5707963
-   }
+   },
+   "room_rects": [
+    {
+     "name": "Чердак",
+     "x": 2,
+     "y": 2,
+     "w": 20,
+     "h": 19
+    }
+   ]
   },
   {
    "id": 2,
@@ -990,7 +1091,16 @@
     "x": 4.5,
     "y": 12.5,
     "a": -1.5707963
-   }
+   },
+   "room_rects": [
+    {
+     "name": "Пристройка-гараж",
+     "x": 2,
+     "y": 2,
+     "w": 12,
+     "h": 11
+    }
+   ]
   },
   {
    "id": 3,
@@ -1058,9 +1168,9 @@
      "kind": 9,
      "x": 17.7,
      "y": 9.5,
-     "name": "Полка с хламом",
+     "name": "Полка подвала",
      "rot": 1,
-     "container": "Полка с хламом",
+     "container": "Полка подвала",
      "rx": 0.28,
      "ry": 0.55,
      "solid": true
@@ -1139,16 +1249,227 @@
     "x": 4.5,
     "y": 16.5,
     "a": -1.5707963
-   }
+   },
+   "room_rects": [
+    {
+     "name": "Паучий подвал",
+     "x": 2,
+     "y": 2,
+     "w": 16,
+     "h": 15
+    }
+   ]
   }
  ],
- "item_anchors": {
-  "Старый сундук": 3,
-  "Стеллаж с инструментами": 12,
-  "Ящик у верстака": 13,
-  "Ящик в подвале": 14,
-  "Ящик в подвале 2": 15,
-  "Старый ящик": 8,
-  "Сундук тайника": 5
+ "items": {
+  "KEY": "Холодильник",
+  "CROWBAR": "Стеллаж кладовой",
+  "NOTE": "Комод в спальне",
+  "MILK": "Кухонный шкаф",
+  "BANDAGE": "Шкафчик ванной",
+  "BATTERY": [
+   "Комод в гостиной",
+   "Ящик стола"
+  ],
+  "BOTTLE": [
+   "Полка в коридоре",
+   "Буфет"
+  ],
+  "CROSSBOW": "Старый ящик",
+  "DART": [
+   "Ящик на чердаке",
+   "Ящик у балки",
+   "Полка подвала"
+  ],
+  "CAR_KEY": "Комод столовой",
+  "CAR_BATTERY": "Стеллаж с инструментами",
+  "NOTE2": "Ящик у верстака",
+  "PHOTO": "Ящик в подвале",
+  "TEDDY": "Ящик в подвале 2"
+ },
+ "trap_spots": [
+  [
+   12,
+   5
+  ],
+  [
+   11,
+   15
+  ],
+  [
+   18,
+   20
+  ],
+  [
+   21,
+   5
+  ],
+  [
+   9,
+   15
+  ],
+  [
+   23,
+   23
+  ],
+  [
+   12,
+   12
+  ],
+  [
+   3,
+   21
+  ],
+  [
+   9,
+   27
+  ]
+ ],
+ "granny_start": {
+  "lv": 0,
+  "x": 24.5,
+  "y": 27.5,
+  "a": -1.5707963
  }
 }
+# <<<PLAN_PY (конец машинно-читаемых данных)
+
+# Размеры фасада по умолчанию для видов мебели (константы дизайна).
+const KIND_HX := [0.78, 0.62, 1.06, 0.37, 0.74, 0.66, 0.53, 0.41, 0.40, 0.55, 0.58, 0.27, 0.33, 0.40, 0.12, 0.04, 0.06, 0.14, 0.04]
+const KIND_HY := [0.42, 0.33, 0.35, 0.30, 0.36, 0.32, 0.32, 0.36, 0.37, 0.28, 0.29, 0.24, 0.28, 0.20, 0.08, 0.04, 0.05, 0.06, 0.04]
+
+# имена предметов из блока PLAN → id (scripts/items.gd)
+const ITEM_BY_NAME := {
+	"KEY": Items.KEY, "CROWBAR": Items.CROWBAR, "NOTE": Items.NOTE,
+	"MILK": Items.MILK, "BATTERY": Items.BATTERY, "BANDAGE": Items.BANDAGE,
+	"BOTTLE": Items.BOTTLE, "CROSSBOW": Items.CROSSBOW, "DART": Items.DART,
+	"CAR_KEY": Items.CAR_KEY, "CAR_BATTERY": Items.CAR_BATTERY,
+	"NOTE2": Items.NOTE2, "PHOTO": Items.PHOTO, "TEDDY": Items.TEDDY,
+}
+
+# Собрать логическую модель уровней из фиксированного плана.
+# Полностью детерминировано: те же данные → те же LevelData.
+static func build_levels() -> Array[LevelData]:
+	var legend: Dictionary = PLAN["legend"]
+	var floor_ids: Dictionary = PLAN["floor"]
+	var out: Array[LevelData] = []
+	for ld in PLAN["levels"]:
+		out.append(_build_level(ld, legend, floor_ids))
+	reset_items(out)
+	return out
+
+static func _build_level(ld: Dictionary, legend: Dictionary, floor_ids: Dictionary) -> LevelData:
+	var lv := LevelData.new(int(ld["w"]), int(ld["h"]), int(ld["id"]), String(ld["name"]))
+	var rows: Array = ld["map"]
+	for y in rows.size():
+		var row: String = rows[y]
+		for x in row.length():
+			var ch := row[x]
+			var t := LevelData.BRICK
+			if legend.has(ch):
+				t = int(legend[ch])
+			elif floor_ids.has(ch):
+				t = int(floor_ids[ch])
+			lv.map[y * lv.w + x] = t
+	# двери — из тайлов DOOR/FRONT на сетке
+	for y in lv.h:
+		for x in lv.w:
+			var t := lv.get_tile(x, y)
+			if t == LevelData.DOOR or t == LevelData.FRONT:
+				var d := LevelData.Door.new()
+				d.x = x
+				d.y = y
+				d.front = t == LevelData.FRONT
+				lv.doors.append(d)
+	# люки/лестницы
+	for h in ld.get("hatches", []):
+		lv.hatches.append(h)
+	# мебель, контейнеры, укрытия
+	for dd in ld.get("decos", []):
+		var dec := LevelData.Deco.new()
+		dec.kind = int(dd["kind"])
+		dec.x = float(dd["x"])
+		dec.y = float(dd["y"])
+		dec.name = String(dd.get("name", ""))
+		dec.rot = int(dd.get("rot", 0))
+		# rx/ry могут быть null (принудительно «по умолчанию») — ключ с null
+		# вернёт null, а не fallback: проверяем явно.
+		var rxv = dd.get("rx")
+		var ryv = dd.get("ry")
+		dec.rx = float(rxv) if rxv != null else KIND_HX[mini(dec.kind, KIND_HX.size() - 1)]
+		dec.ry = float(ryv) if ryv != null else KIND_HY[mini(dec.kind, KIND_HY.size() - 1)]
+		dec.solid = bool(int(dd.get("solid", 1)))
+		var tx := int(floor(dec.x))
+		var ty := int(floor(dec.y))
+		dec.tile_x = tx
+		dec.tile_y = ty
+		if dd.has("container"):
+			var c := LevelData.ContainerData.new()
+			c.x = tx
+			c.y = ty
+			c.label = String(dd["container"])
+			dec.container = c
+			lv.containers.append(c)
+		if dd.has("hide"):
+			var hs := LevelData.HideSpot.new()
+			hs.x = tx
+			hs.y = ty
+			hs.enter_x = int(dd["hide"]["enter"][0])
+			hs.enter_y = int(dd["hide"]["enter"][1])
+			hs.is_bed = bool(int(dd["hide"].get("bed", 0)))
+			hs.label = String(dd["hide"].get("label", "Укрытие"))
+			dec.hide = hs
+			lv.hides.append(hs)
+		if int(dd["kind"]) == 23:
+			dec.is_car = true
+		if int(dd["kind"]) == 20:
+			dec.is_cradle = true
+		lv.decos.append(dec)
+	# лампы
+	for lp in ld.get("lamps", []):
+		lv.lamps.append(Vector3(float(lp[0]), 2.25, float(lp[1])))
+	# паутина
+	for wb in ld.get("webs", []):
+		lv.webs.append(Rect2(float(wb[0]), float(wb[1]), float(wb[2]), float(wb[3])))
+	# пауки (только подвал их имеет)
+	for sp in ld.get("spiders", []):
+		lv.spiders.append(Vector2(float(sp[0]), float(sp[1])))
+	# комнатные имена
+	for rn in ld.get("rooms", []):
+		lv.room_names.append(String(rn))
+	lv.lamp_rooms.clear()
+	for ri in ld.get("lamp_rooms", []):
+		lv.lamp_rooms.append(int(ri))
+	# спавн игрока
+	lv.spawn_x = float(ld["spawn"]["x"])
+	lv.spawn_y = float(ld["spawn"]["y"])
+	lv.spawn_a = float(ld["spawn"]["a"])
+	lv.origin = Vector3(lv.id * 200.0, 0.0, 0.0)
+	lv.rebuild_ai_blocked()
+	return lv
+
+# Расставить предметы строго по плану: каждый — в свой контейнер.
+# Вызывается при каждом старте игры и при загрузке мигрированных сейвов:
+# состав и позиции предметов всегда одни и те же.
+static func reset_items(levels: Array[LevelData]) -> void:
+	for lv in levels:
+		for c in lv.containers:
+			c.item_id = Items.NONE
+	for item_name in PLAN["items"]:
+		var v = PLAN["items"][item_name]
+		var labels: Array = v if v is Array else [v]
+		var id := int(ITEM_BY_NAME[String(item_name)])
+		for label in labels:
+			var placed := false
+			for lv in levels:
+				for c in lv.containers:
+					if c.label == String(label):
+						c.item_id = id
+						placed = true
+						break
+			if not placed:
+				push_error("HousePlan: контейнер с меткой '%s' не найден (предмет %s)" % [label, item_name])
+
+# Точка старта Гренни (фиксированная).
+static func granny_start() -> Dictionary:
+	return PLAN["granny_start"]
