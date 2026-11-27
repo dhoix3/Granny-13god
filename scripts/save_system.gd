@@ -11,7 +11,7 @@ const SAVE_DIR := "user://saves"
 const AUTO := "auto"
 const SLOTS: Array[String] = ["slot1", "slot2", "slot3"]
 const ALL_SLOTS: Array[String] = [AUTO, "slot1", "slot2", "slot3"]
-const VERSION := 1
+const VERSION := 2
 
 class SlotMeta:
 	var slot := ""
@@ -94,7 +94,8 @@ static func save_run(game: GrannyGame, slot: String) -> bool:
 	state["max_days"] = game.max_days
 	state["play_time"] = game.play_time
 	state["deaths"] = game.deaths
-	state["inv"] = game.inv.duplicate()
+	state["held_item"] = int(game.held_item)
+	state["dart_ammo"] = int(game.dart_ammo)
 	state["locks"] = game.locks.duplicate()
 	state["lock4"] = game.lock4
 	state["car_key_installed"] = game.car_key_installed
@@ -119,12 +120,19 @@ static func save_run(game: GrannyGame, slot: String) -> bool:
 	}
 	state["cat"] = {"fed": game.cat.fed, "angry": game.cat.angry, "x": game.cat.x, "y": game.cat.y}
 
+	# содержимое контейнеров: предмет и флаг обыска
 	var containers := []
 	for lv in game.world.levels:
 		for c in lv.containers:
-			if c.searched:
-				containers.append({"lv": lv.id, "x": c.x, "y": c.y})
-	state["searched_containers"] = containers
+			if c.searched or c.item_id != Items.NONE:
+				containers.append({"lv": lv.id, "x": c.x, "y": c.y, "item": int(c.item_id), "s": c.searched})
+	state["containers"] = containers
+
+	# предметы на полу
+	var grounds := []
+	for gi in game.ground_items:
+		grounds.append({"id": int(gi["id"]), "lv": int(gi["level"]), "x": float(gi["x"]), "y": float(gi["y"])})
+	state["ground_items"] = grounds
 
 	var doors := []
 	for lv in game.world.levels:
@@ -168,6 +176,11 @@ static func load_run(game: GrannyGame, slot: String) -> bool:
 	if typeof(data) != TYPE_DICTIONARY or typeof(data.get("state")) != TYPE_DICTIONARY:
 		return false
 	var st: Dictionary = data["state"]
+	# Сейвы старого формата (v1, до переработки) мигрируют безопасно:
+	# геометрия дома и разметка контейнеров изменились, поэтому предметы
+	# в контейнерах раздаются заново, инвентарь и предметы на полу
+	# не переносятся. Прогресс (день, замки, машина, статистика) сохраняется.
+	var old_format := int(st.get("version", 1)) < 2
 
 	game.diff_index = clampi(int(st.get("diff_index", 1)), 0, game.diffs.size() - 1)
 	game.diff = game.diffs[game.diff_index]
@@ -185,12 +198,32 @@ static func load_run(game: GrannyGame, slot: String) -> bool:
 	for i in 3:
 		game.locks[i] = bool(locks_arr[i])
 
-	game.inv.clear()
-	for v in st.get("inv", []):
-		var id := int(v)
-		# фильтр мусора из повреждённых/руками правленых сейвов
-		if id != Items.NONE and Items.display_name(id) != "":
-			game.inv.append(id)
+	game.held_item = Items.NONE
+	game.dart_ammo = 0
+	game.player.set_held(0)
+	if not old_format:
+		var held := int(st.get("held_item", 0))
+		if held != Items.NONE and Items.display_name(held) != "":
+			game.held_item = held
+			game.player.set_held(held)
+		game.dart_ammo = clampi(int(st.get("dart_ammo", 0)), 0, 3)
+	game.clear_ground_items()
+	if not old_format:
+		for gv in st.get("ground_items", []):
+			if typeof(gv) != TYPE_DICTIONARY:
+				continue
+			var gid := int(gv.get("id", 0))
+			var glv := int(gv.get("lv", 0))
+			if gid == Items.NONE or Items.display_name(gid) == "":
+				continue
+			if glv < 0 or glv >= game.world.levels.size():
+				continue
+			var gl: LevelData = game.world.levels[glv]
+			var gx2 := clampf(float(gv.get("x", 1.5)), 0.5, gl.w - 0.5)
+			var gy2 := clampf(float(gv.get("y", 1.5)), 0.5, gl.h - 0.5)
+			# не воскрешаем предметы внутри стен
+			if not gl.solid_at(gx2, gy2):
+				game.spawn_ground_item(gid, glv, gx2, gy2)
 	game.noises.clear()
 	game.subs.clear()
 	for t in game.throwns:
@@ -218,18 +251,27 @@ static func load_run(game: GrannyGame, slot: String) -> bool:
 	game.attic_alert_t = 0.0
 	game.lightning_t = game.time + 30.0 + game.rng.randf() * 30.0
 
-	# Контейнеры: детерминированная генерация уже раздала предметы.
-	# Обысканные при сохранении — обнуляем, чтобы предметы не дублировались.
-	var searched: Array = st.get("searched_containers", [])
+	# Контейнеры. v1: дом другой — раздаём предметы заново по seed.
+	# v2: восстанавливаем и содержимое, и флаги обыска.
 	for lv in game.world.levels:
 		for c in lv.containers:
 			c.searched = false
-	for sc in searched:
-		var lv: LevelData = game.world.levels[int(sc.lv)]
-		var c = lv.container_at(int(sc.x), int(sc.y))
-		if c != null:
-			c.searched = true
-			c.item_id = Items.NONE
+	if old_format:
+		HouseData.distribute_items(game.world.levels, HouseData._data()["item_anchors"], game.seed)
+	else:
+		# сначала очистить всё, потом нанести сохранённое
+		HouseData.distribute_items(game.world.levels, HouseData._data()["item_anchors"], game.seed)
+		for cd in st.get("containers", []):
+			if typeof(cd) != TYPE_DICTIONARY:
+				continue
+			var clv := clampi(int(cd.get("lv", 0)), 0, game.world.levels.size() - 1)
+			var cl: LevelData = game.world.levels[clv]
+			var cc = cl.container_at(int(cd.get("x", -1)), int(cd.get("y", -1)))
+			if cc == null:
+				continue
+			var citem := int(cd.get("item", 0))
+			cc.item_id = citem if (citem == Items.NONE or Items.display_name(citem) != "") else Items.NONE
+			cc.searched = bool(cd.get("s", false))
 
 	# Двери
 	for lv in game.world.levels:
@@ -284,7 +326,7 @@ static func load_run(game: GrannyGame, slot: String) -> bool:
 
 	# Гренни
 	var gs: Dictionary = st.get("granny", {})
-	var g_level := clampi(int(gs.get("level", 0)), 0, 1)
+	var g_level := clampi(int(gs.get("level", 0)), 0, game.world.levels.size() - 1)
 	var glv: LevelData = game.world.levels[g_level]
 	var gx := clampf(float(gs.get("x", 24.5)), 0.5, glv.w - 0.5)
 	var gy := clampf(float(gs.get("y", 27.5)), 0.5, glv.h - 0.5)

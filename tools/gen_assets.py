@@ -708,8 +708,166 @@ def gen_fonts() -> None:
     print("fonts OK")
 
 
-if __name__ == "__main__":
-    gen_textures()
-    gen_audio()
-    gen_fonts()
     print("ALL ASSETS GENERATED")
+
+
+# ------------------------------------------------------------------
+# Overhaul 2: атмосферный, бабушкин и интерфейсный звук.
+# Все композиции оригинальные, синтез здесь же — ничего не копируется.
+def gen_audio2() -> None:
+    print("audio2 (atmosphere)...")
+    rng = np.random.default_rng(99)
+
+    # ---- амбиент: петлевые слои по этажам ----
+    # ветер снаружи (тонкий, свистящий через щели)
+    w = noise(9.0, 0.16, 0.0, 0.985, seed=501)
+    w = w * (0.55 + 0.45 * np.sin(np.linspace(0, 6.3, len(w)) * 0.7) * np.sin(np.linspace(0, 3.1, len(w)) * 1.3))
+    gust = tone(9.0, 340, 620, 0.030, 0.5, "noise", seed=502) * np.sin(np.linspace(0, 5.0, len(w)) * 0.9) ** 2
+    write_wav("wind_loop", lowpass(loopify(softclip(w + gust), 1.2), 0.28), loop=True)
+
+    # гул подвала: глубокий гул + капель
+    base = tone(11.0, 46, 43, 0.16, 0.6, "sine", vib=0.012, vib_rate=0.35, seed=511)
+    air = noise(11.0, 0.05, 0.0, 0.99, seed=512)
+    parts = [lowpass(base, 0.20), lowpass(air, 0.12)]
+    for i, dt_ in enumerate([1.7, 4.3, 6.9, 9.4]):
+        d = mix(
+            tone(0.05, 1500, 700, 0.10, 4.0, "sine", seed=513 + i),
+            tone(0.32, 430, 180, 0.06, 2.0, "sine", seed=517 + i),
+        )
+        parts.append(at(len(base), d, dt_))
+    write_wav("cellar_loop", loopify(softclip(mix(*parts)), 0.8), loop=True)
+
+    # скрип чердака под ветром: длинные деревянные стоны
+    p = []
+    for i, (dt_, f0, ln) in enumerate([(0.8, 240, 2.6), (5.0, 190, 3.4), (8.6, 280, 2.2)]):
+        s = mix(
+            tone(ln, f0, f0 * 0.82, 0.055, 1.2, "saw", vib=0.02, vib_rate=5.5, seed=521 + i),
+            noise(ln, 0.018, 2.0, 0.9, 525 + i),
+        )
+        e = env_ar(int(ln * RATE), 0.4 * ln / RATE, 1.2, RATE)
+        p.append(at(int(12.0 * RATE), lowpass(s, 0.4) * e[: len(s)], dt_))
+    write_wav("attic_loop", loopify(softclip(mix(*p)), 0.7), loop=True)
+
+    # ---- точечные атмосферные события ----
+    # осадка дома: глухой стук балки + эхо
+    write_wav("house_settle", softclip(mix(
+        tone(0.30, 130, 52, 0.30, 2.4, seed=531),
+        tone(0.16, 74, 40, 0.22, 2.0, seed=532),
+        lowpass(noise(0.22, 0.10, 2.0, 0.8, 533), 0.3),
+    )))
+    write_wav("distant_noise", softclip(mix(
+        tone(0.7, 300, 90, 0.06, 1.8, "saw", vib=0.06, vib_rate=4.0, seed=541),
+        lowpass(noise(0.7, 0.05, 1.5, 0.92, 542), 0.15),
+    )))
+    # что-то упало в соседней комнате
+    write_wav("something_falls", softclip(mix(
+        tone(0.10, 210, 70, 0.30, 2.6, seed=551),
+        tone(0.07, 900, 300, 0.12, 3.0, "noise", seed=552),
+        at(int(0.16 * RATE), tone(0.09, 160, 60, 0.24, 2.8, seed=553), 0.10),
+    )))
+    # ветка царапает окно
+    scr = []
+    for i in range(5):
+        f0 = 700 + rng.uniform(-150, 250)
+        scr.append(at(int(1.3 * RATE), tone(0.16, f0, f0 * 0.9, 0.045, 1.5, "noise", seed=561 + i), i * 0.22 + rng.uniform(0, 0.08)))
+    write_wav("window_scratch", softclip(mix(*scr)))
+
+    # ---- бабушка ----
+    # медленный тяжёлый шаг по дереву (глуше и тяжелее игрока)
+    write_wav("granny_step2", softclip(mix(
+        tone(0.16, 88, 40, 0.34, 2.2, seed=571),
+        lowpass(noise(0.14, 0.14, 2.0, 0.7, 572), 0.22),
+        tone(0.05, 1100, 500, 0.03, 3.0, "noise", seed=573),
+    )))
+    # шаг по бетону (подвал/пристройка)
+    write_wav("granny_step3", softclip(mix(
+        tone(0.12, 150, 65, 0.30, 2.6, seed=581),
+        tone(0.06, 1600, 800, 0.05, 3.2, "noise", seed=582),
+        noise(0.08, 0.08, 3.0, 0.5, 583),
+    )))
+    # напряжение: она что-то услышала (резкий вдох)
+    g = tone(0.55, 520, 240, 0.10, 1.4, "noise", seed=591) * env_ar(int(0.55 * RATE), 0.12, 2.4, RATE)
+    write_wav("granny_gasps", softclip(mix(lowpass(g, 0.5), tone(0.4, 180, 90, 0.05, 2.0, seed=592))))
+    # потеряла игрока: разочарованный выдох-стон
+    write_wav("granny_lost", softclip(mix(
+        tone(0.9, 300, 170, 0.09, 1.6, "saw", vib=0.03, vib_rate=5.0, seed=601),
+        tone(0.7, 150, 90, 0.06, 2.0, seed=602),
+        lowpass(noise(0.8, 0.03, 1.2, 0.9, 603), 0.25),
+    )))
+    # преследование: хриплые выдохи
+    pt = []
+    for i in range(4):
+        d = tone(0.30, 480, 210, 0.10, 1.8, "noise", seed=611 + i)
+        pt.append(at(int(1.5 * RATE), lowpass(d, 0.55) * env_ar(int(0.30 * RATE), 0.05, 2.2, RATE)[: len(d)][: int(0.30 * RATE)], i * 0.36))
+    write_wav("granny_pant", softclip(mix(*pt)))
+    # напевает при поиске
+    hm = []
+    notes = [(0.0, 220), (0.55, 262), (1.1, 196), (1.65, 233)]
+    for i, (dt_, f) in enumerate(notes):
+        d = tone(0.42, f, f * 0.98, 0.045, 1.4, "sine", vib=0.025, vib_rate=6.0, seed=621 + i)
+        hm.append(at(int(2.6 * RATE), lowpass(d, 0.5) * env_ar(int(0.42 * RATE), 0.10, 2.0, RATE)[: int(0.42 * RATE)], dt_))
+    write_wav("granny_hum", softclip(mix(*hm)))
+    # ставит капкан / возится у механизмов
+    write_wav("granny_rummage", softclip(mix(
+        tone(0.14, 800, 300, 0.10, 2.5, "noise", seed=631),
+        at(int(0.3 * RATE), tone(0.12, 500, 200, 0.09, 2.6, "noise", seed=632), 0.14),
+        at(int(0.3 * RATE), tone(0.10, 300, 120, 0.12, 2.4, seed=633), 0.26),
+    )))
+
+    # ---- взаимодействия ----
+    # выдвигающийся ящик (обыск контейнера)
+    draw = tone(0.5, 260, 130, 0.07, 1.5, "saw", vib=0.02, vib_rate=9.0, seed=641)
+    write_wav("drawer", softclip(mix(
+        lowpass(draw, 0.5),
+        noise(0.5, 0.05, 2.0, 0.85, 642),
+        tone(0.08, 140, 70, 0.18, 2.4, seed=643),
+    )))
+    # лестница: три глухих ступени
+    st = []
+    for i in range(3):
+        st.append(at(int(0.9 * RATE), softclip(mix(
+            tone(0.11, 110, 55, 0.26, 2.4, seed=651 + i),
+            lowpass(noise(0.09, 0.09, 2.0, 0.75, 655 + i), 0.3),
+        )), i * 0.26))
+    write_wav("stairs", softclip(mix(*st)))
+    # металлическая дверь пристройки
+    write_wav("metal_door", softclip(mix(
+        tone(0.14, 2100, 700, 0.08, 3.0, "noise", seed=661),
+        tone(0.30, 240, 90, 0.22, 2.2, seed=662),
+        tone(0.20, 500, 180, 0.06, 2.5, seed=663),
+    )))
+    # половица-предательница: высокий внезапный скрип
+    write_wav("floor_creak2", softclip(mix(
+        tone(0.42, 950, 480, 0.055, 1.3, "saw", vib=0.05, vib_rate=14.0, seed=671),
+        tone(0.30, 620, 340, 0.035, 1.5, "saw", vib=0.03, vib_rate=9.0, seed=672),
+        noise(0.28, 0.02, 2.0, 0.9, 673),
+    )))
+    # предмет упал на пол (дроп)
+    write_wav("item_drop", softclip(mix(
+        tone(0.07, 950, 350, 0.14, 3.0, "noise", seed=681),
+        tone(0.12, 190, 80, 0.22, 2.6, seed=682),
+        at(int(0.18 * RATE), tone(0.05, 700, 300, 0.06, 3.0, "noise", seed=683), 0.11),
+    )))
+
+    # ---- музыка: return-слой (после погони/начало дня) ----
+    parts = []
+    chords = [(220.0, 261.6, 329.6), (196.0, 233.1, 293.7), (174.6, 220.0, 261.6), (164.8, 207.7, 246.9)]
+    for i, ch in enumerate(chords):
+        seg = []
+        for f in ch:
+            seg.append(tone(4.4, f, f, 0.030, 0.8, "sine", vib=0.006, vib_rate=4.5, seed=700 + i * 7 + int(f)))
+        seg.append(tone(4.4, ch[0] / 2.0, ch[0] / 2.0, 0.040, 0.9, "triangle", seed=730 + i))
+        parts.append(at(int(18.0 * RATE), softclip(mix(*seg)) * env_ar(int(4.4 * RATE), 1.2, 1.5, RATE)[: int(4.4 * RATE)], i * 4.5))
+    rain = noise(18.0, 0.020, 0.0, 0.995, seed=741)
+    parts.append(lowpass(rain, 0.18))
+    write_wav("music_return", loopify(softclip(mix(*parts)), 0.5), loop=True)
+    print("audio2 OK")
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "audio2":
+        gen_audio2()
+    else:
+        gen_textures()
+        gen_audio()
+        gen_audio2()
+        gen_fonts()

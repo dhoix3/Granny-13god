@@ -35,19 +35,16 @@ var mouse_sensitivity := 1.0
 var camera: Camera3D
 var flashlight: SpotLight3D
 var shape_node: CollisionShape3D
-var viewmodel: Node3D
-var vm_lens_mat: StandardMaterial3D
 
-# --- руки и предметы ---
+# --- парящий предмет (вместо рук) ---
 var held_id := 0
+var item_root: Node3D
 var _item_nodes: Dictionary = {}
-var _raise_k := 1.0
+var _appear_k := 1.0
 var _inspect_t := -1.0
 var _crouch_k := 0.0
 var _strafe_k := 0.0
-var _last_held := 0
-var right_hand: Node3D
-var left_hand: Node3D
+var _item_mat_cache: Dictionary = {}
 
 var _dust: GPUParticles3D
 
@@ -77,7 +74,7 @@ func _ready() -> void:
 	flashlight.light_color = Color(1.0, 0.94, 0.80)
 	flashlight.shadow_enabled = true
 	camera.add_child(flashlight)
-	_build_viewmodel()
+	_build_item_float()
 	_build_dust()
 
 func setup(pgame: Node) -> void:
@@ -120,110 +117,33 @@ func _cyl_mesh(r_top: float, r_bot: float, h: float, seg: int = 14) -> CylinderM
 	cm.radial_segments = seg
 	return cm
 
-# ------------------------------------------------------------------ viewmodel
+# ------------------------------------------------------------------ парящий предмет
 
-func _build_viewmodel() -> void:
-	viewmodel = Node3D.new()
-	viewmodel.name = "Viewmodel"
-	camera.add_child(viewmodel)
+# Предмет не держат руки — он парит перед камерой чуть правее центра,
+# слегка покачивается и вращается при осмотре (X).
+func _build_item_float() -> void:
+	item_root = Node3D.new()
+	item_root.name = "ItemFloat"
+	item_root.position = Vector3(0.235, -0.155, -0.565)
+	camera.add_child(item_root)
+	_build_item_models(item_root)
+	item_root.visible = false
 
-	var skin := Mats.mat("skin")
-	var sleeve := Mats.mat("fabric_blue")
-	var metal := Mats.mat("metal")
-	var metal_hi := Mats.mat("brass")
-	var grip := Mats.mat("black")
-	var skin_hi := Mats.mat("skin")
-
-	vm_lens_mat = StandardMaterial3D.new()
-	vm_lens_mat.albedo_color = Color(0.38, 0.24, 0.10)
-	vm_lens_mat.emission_enabled = true
-	vm_lens_mat.emission = Color(1.0, 0.66, 0.26)
-	vm_lens_mat.emission_energy_multiplier = 0.7
-	vm_lens_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-
-	# --- правая рука с фонариком ---
-	right_hand = Node3D.new()
-	right_hand.name = "RightHand"
-	right_hand.position = Vector3(0.44, -0.34, -0.68)
-	right_hand.rotation = Vector3(0.03, 0.08, -0.10)
-	viewmodel.add_child(right_hand)
-
-	var torch := Node3D.new()
-	torch.name = "Torch"
-	torch.rotation = Vector3(0.17, 0.31, 0.03)
-	right_hand.add_child(torch)
-	# корпус, хвостовик, насечки, кнопка, головка, линза
-	_part(torch, _cyl_mesh(0.020, 0.023, 0.16), Vector3(0.0, 0.0, -0.055), metal)
-	_part(torch, _cyl_mesh(0.024, 0.024, 0.012), Vector3(0.0, 0.0, 0.030), grip)
-	for i in 3:
-		_part(torch, _cyl_mesh(0.0245, 0.0245, 0.008), Vector3(0.0, 0.0, 0.006 - float(i) * 0.026), grip)
-	_part(torch, _cyl_mesh(0.036, 0.023, 0.085), Vector3(0.0, 0.0, -0.178), metal)
-	_part(torch, _cyl_mesh(0.039, 0.039, 0.012), Vector3(0.0, 0.0, -0.226), metal_hi)
-	_part(torch, _cyl_mesh(0.033, 0.033, 0.006, 12), Vector3(0.0, 0.0, -0.234), vm_lens_mat)
-
-	# кисть: ладонь, 4 пальца обхватом, большой палец
-	var palm := SphereMesh.new()
-	palm.radius = 0.029
-	palm.height = 0.066
-	palm.radial_segments = 10 if Mats.quality() == 0 else 14
-	palm.rings = 6 if Mats.quality() == 0 else 8
-	_part(torch, palm, Vector3(0.043, -0.030, -0.004), skin, Vector3(0.90, 1.05, 0.95), Vector3(0.0, 0.0, 0.12))
-	for i in 4:
-		var fz := 0.038 - float(i) * 0.024
-		_limb(torch, 0.0110, Vector3(0.050, -0.020, fz), Vector3(-0.020, -0.006, fz - 0.008), skin_hi)
-	_limb(torch, 0.0100, Vector3(0.030, -0.040, 0.045), Vector3(0.024, -0.030, -0.015), skin_hi)
-	_limb(torch, 0.023, Vector3(0.038, -0.048, 0.040), Vector3(0.045, -0.062, 0.070), skin)
-	# манжета и предплечье
-	_limb(torch, 0.033, Vector3(0.042, -0.055, 0.055), Vector3(0.055, -0.085, 0.105), sleeve)
-	var wrist: Vector3 = torch.transform * Vector3(0.055, -0.085, 0.105)
-	_limb(right_hand, 0.042, wrist, Vector3(0.21, -0.42, 0.32), sleeve)
-
-	# --- левая рука держит предмет ---
-	left_hand = Node3D.new()
-	left_hand.name = "LeftHand"
-	left_hand.position = Vector3(-0.42, -0.37, -0.60)
-	left_hand.rotation = Vector3(0.04, -0.10, 0.12)
-	viewmodel.add_child(left_hand)
-
-	# ладонь левой раскрыта вверх: кисть + пальцы полусогнуты
-	var palm2 := SphereMesh.new()
-	palm2.radius = 0.028
-	palm2.height = 0.060
-	palm2.radial_segments = 10 if Mats.quality() == 0 else 14
-	palm2.rings = 6 if Mats.quality() == 0 else 8
-	_part(left_hand, palm2, Vector3(-0.006, -0.020, -0.010), skin, Vector3(1.0, 0.85, 1.05), Vector3(0.0, 0.0, -0.10))
-	for i in 4:
-		var fz2 := -0.030 - float(i) * 0.022
-		_limb(left_hand, 0.0105, Vector3(-0.044, -0.014, fz2 + 0.012), Vector3(0.018, 0.004, fz2 - 0.004), skin_hi)
-	_limb(left_hand, 0.0095, Vector3(-0.026, -0.012, 0.042), Vector3(0.020, -0.002, -0.004), skin_hi)
-	_limb(left_hand, 0.022, Vector3(-0.034, -0.042, 0.036), Vector3(-0.046, -0.060, 0.066), skin)
-	_limb(left_hand, 0.033, Vector3(-0.040, -0.052, 0.050), Vector3(-0.056, -0.082, 0.10), sleeve)
-	var wrist2: Vector3 = left_hand.transform * Vector3(-0.056, -0.082, 0.10)
-	_limb(viewmodel, 0.042, wrist2, Vector3(-0.22, -0.44, 0.30), sleeve)
-
-	# слот предмета: точка над ладонью
-	var slot := Node3D.new()
-	slot.name = "ItemSlot"
-	slot.position = Vector3(-0.004, 0.018, -0.012)
-	left_hand.add_child(slot)
-	_build_item_models(slot)
-
-func _item_material(name: String) -> StandardMaterial3D:
-	var m := Mats.mat(name)
-	# материалы предметов затенены обычным способом — vertex-AO на них не влияет
-	return m
+func _imat(name: String) -> StandardMaterial3D:
+	if not _item_mat_cache.has(name):
+		_item_mat_cache[name] = Mats.mat(name)
+	return _item_mat_cache[name]
 
 func _build_item_models(slot: Node3D) -> void:
-	# Каждая модель предмета — компактный узел в масштабе ладони.
-	var brass := _item_material("brass")
-	var metal := _item_material("metal")
-	var red := _item_material("red")
-	var paper := _item_material("paper")
-	var white := _item_material("white")
-	var black := _item_material("black")
-	var glass := _item_material("bottle")
-	var wood := _item_material("wood_dark")
-	var skin := Mats.mat("fabric_red")
+	# Каждая модель предмета — компактный узел перед камерой.
+	var brass := _imat("brass")
+	var metal := _imat("metal")
+	var red := _imat("red")
+	var paper := _imat("paper")
+	var white := _imat("white")
+	var black := _imat("black")
+	var glass := _imat("bottle")
+	var wood := _imat("wood_dark")
 
 	# КЛЮЧ (1)
 	var key := Node3D.new()
@@ -343,9 +263,10 @@ func set_held(id: int) -> void:
 	if id == held_id:
 		return
 	held_id = id
-	_raise_k = 0.0  # анимация подъёма нового предмета
+	_appear_k = 0.0  # анимация появления нового предмета
 	if _inspect_t >= 0.0:
 		_inspect_t = -1.0
+	# звуки взятия/дропа играет game.gd (give_item/drop_held)
 
 func start_inspect() -> void:
 	if held_id != 0 and _inspect_t < 0.0:
@@ -387,48 +308,43 @@ func _build_dust() -> void:
 	add_child(_dust)
 
 func _process(_dt: float) -> void:
-	if viewmodel == null or game == null:
+	if item_root == null or game == null:
 		return
-	viewmodel.visible = game.state == game.STATE_PLAY and not game.journal and not hidden and not dead
-	if not viewmodel.visible:
+	var show: bool = game.state == game.STATE_PLAY and not game.journal and not hidden and not dead and held_id != 0
+	item_root.visible = show
+	if not show:
 		return
 	var walk := clampf(move_speed / 3.45, 0.0, 1.0)
-	var sway := sin(bob) * 0.014 * walk
-	var bob_y := absf(cos(bob)) * 0.012 * walk
-	var dip := -0.05 if crouch else 0.0
+	var sway := sin(bob) * 0.010 * walk
+	var bob_y := absf(cos(bob)) * 0.009 * walk
 	var push := act_push
 	var throw_k := act_throw
-	# анимация подъёма рук/предмета при смене состояния
-	_raise_k = minf(1.0, _raise_k + _dt * 3.2)
-	var rk := 1.0 - _raise_k
-	# осмотр предмета (X): плавный поворот к центру + вращение
+	var aim := aim_k
+	# появление предмета: подплывает и проявляется
+	_appear_k = minf(1.0, _appear_k + _dt * 3.4)
+	var ak := 1.0 - _appear_k
+	# осмотр (X): плавно к центру экрана и вращается вокруг оси Y
 	var inspect_rot := 0.0
 	var inspect_lean := 0.0
+	var inspect_zoom := 0.0
 	if _inspect_t >= 0.0:
 		_inspect_t += _dt
-		var k := clampf(_inspect_t / 2.4, 0.0, 1.0)
-		inspect_rot = k * TAU * 1.0
+		var k := clampf(_inspect_t / 2.6, 0.0, 1.0)
+		inspect_rot = k * TAU * 0.75
 		inspect_lean = sin(minf(k * PI, PI)) * 0.55
+		inspect_zoom = sin(minf(k * PI, PI)) * 0.16
 		if k >= 1.0:
 			_inspect_t = -1.0
-	var slot: Node3D = left_hand.get_node_or_null("ItemSlot")
-	if slot != null:
-		slot.rotation.y = inspect_rot
-	viewmodel.position = Vector3(
-		0.44 + sway - inspect_lean * 0.16,
-		-0.34 + bob_y + dip - push * 0.055 - rk * 0.30,
-		-0.68 + push * 0.035 - inspect_lean * 0.10 - rk * 0.12)
-	viewmodel.rotation = Vector3(
-		0.03 + push * 0.22 - rk * 0.55 - inspect_lean * 0.35,
-		0.08 - inspect_lean * 0.5,
-		-0.10 - sway * 1.4 + throw_k * 0.55)
-	# предмет виден только в левой руке; скрываем остальные модели
-	for id in _item_nodes:
-		var node: Node3D = _item_nodes[id]
-		node.visible = id == held_id
-	vm_lens_mat.emission_enabled = flashlight_on
-	# свет фонарика подсвечивает руки: лёгкий локальный OmniLight не нужен —
-	# SpotLight камеры уже освещает вьюмодель, т.к. она перед камерой.
+	# дыхание покоя: очень лёгкое, чтобы предмет не выглядел приклеенным
+	var idle := sin(game.time * 1.7) * 0.004
+	item_root.rotation.y = inspect_rot + sway * 0.6
+	item_root.rotation.x = -0.08 + inspect_lean * 0.4
+	item_root.rotation.z = sway * 1.8 + throw_k * 0.5
+	item_root.position = Vector3(
+		0.235 + sway * 1.6 - inspect_lean * 0.19 + aim * 0.10,
+		-0.155 + bob_y + idle - push * 0.03 - ak * 0.14 + inspect_lean * 0.10,
+		-0.565 + inspect_zoom - ak * 0.10 - push * 0.03 + aim * 0.16)
+	item_root.scale = Vector3.ONE * (0.6 + 0.4 * _appear_k)
 
 func place_at(pid: int, x: float, z: float, a: float) -> void:
 	level = pid
@@ -620,7 +536,7 @@ func apply_camera() -> void:
 	var crouch_drop: float = 0.30 * clampf(_crouch_k, 0.0, 1.2)
 	camera.position.y = EYE_H + sin(bob * 2.0) * 0.012 * speed_k - crouch_drop
 	camera.position.x = 0.0
-	camera.rotation.x = pitch + sin(bob) * 0.022 * clampf(move_speed / 3.0, 0.0, 1.0)
+	camera.rotation.x = pitch + sin(bob) * 0.022 * clampf(move_speed / 3.0, 0.0, 1.0) - act_push * 0.05 - act_throw * 0.03
 	# лёгкий крен при стрейфе и покачивание взгляда
 	camera.rotation.z = -_strafe_k * 0.022 + sin(bob) * 0.006 * speed_k
 	flashlight.visible = flashlight_on and battery > 0.0
@@ -677,4 +593,4 @@ func reset_state() -> void:
 	move_speed = 0.0
 	_crouch_k = 0.0
 	_inspect_t = -1.0
-	_raise_k = 1.0
+	_appear_k = 1.0

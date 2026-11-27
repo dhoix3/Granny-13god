@@ -366,11 +366,11 @@ func _draw_help(W: float, H: float) -> void:
 		"Мышь — осматриваться",
 		"SHIFT — бежать (тратит выносливость и ОЧЕНЬ шумит)",
 		"CTRL / C — красться (тихо, но медленно)",
-		"E — открыть дверь, обыскать шкаф, спрятаться, лезть на чердак",
-		"F — фонарик (свет видит Гренни), M — карта",
-		"G — бросить бутылку: звон стекла уводит её в другую комнату",
-		"Q — выстрел из арбалета стрелой с транквилизатором (ПКМ — прицел)",
-		"X — осмотреть предмет в руке",
+		"E — открыть дверь, обыскать шкаф, спрятаться, лезть по лестнице",
+		"F — фонарик (свет видит Гренни)",
+		"G — положить предмет на пол; бутылка в руках — бросить и отвлечь",
+		"Q — выстрел из арбалета (стрелы заряжаются, поднимая их с арбалетом в руках)",
+		"X — осмотреть предмет (он парит перед глазами)",
 		"TAB — дневник: что найдено, что открыто, что помнить",
 		"ПРОБЕЛ — вырваться из капкана",
 		"ESC — пауза, F11 — полный экран",
@@ -382,7 +382,7 @@ func _draw_help(W: float, H: float) -> void:
 		y += 30.0 * u
 	y += 8.0
 	_panel(Rect2(96 * u, y, W - 192 * u, 150 * u), Color(0.14, 0.07, 0.06, 0.55), Color(0.62, 0.22, 0.18, 0.45), 1.4)
-	_btext(120 * u, y + 32 * u, "ЦЕЛЬ: открыть три замка на входной двери", int(20 * u), AMBER)
+	_btext(120 * u, y + 32 * u, "ЦЕЛЬ: открыть три замка на входной двери — и унести ноги", int(20 * u), AMBER)
 	_text(124 * u, y + 72 * u, "1. Висячий замок   — ключ от замка", int(15 * u), BONE)
 	_text(124 * u, y + 100 * u, "2. Ржавый засов    — монтировка", int(15 * u), BONE)
 	_text(124 * u, y + 128 * u, "3. Кодовый замок   — записка с кодом (она на чердаке)", int(15 * u), BONE)
@@ -430,9 +430,6 @@ func _draw_hud(W: float, H: float) -> void:
 	_text(W - 24.0 * u - _tw(day_text, int(19 * u)), 34 * u, day_text, int(19 * u), BONE)
 	var lock_text := "замки: " + str(game.count_locks()) + "/3"
 	_text(W - 24.0 * u - _tw(lock_text, int(12 * u)), 54 * u, lock_text, int(12 * u), DIM)
-	# миникарта
-	if game.minimap:
-		_draw_minimap(W, H, u)
 	# полосы
 	var bx := 24.0 * u
 	var by := H - 152.0 * u
@@ -442,22 +439,22 @@ func _draw_hud(W: float, H: float) -> void:
 	_bar(bx, by + 32 * u, 180 * u, 8 * u, p.stamina, Color(0.28, 0.55, 0.28))
 	_text(bx + 200 * u, by - 6 * u, "ФОНАРИК", int(10 * u), DIM)
 	_bar(bx + 200 * u, by, 130 * u, 8 * u, p.battery, Color(0.80, 0.62, 0.24))
-	# инвентарь
-	var ix := 24.0 * u
-	var iy := H - 78.0 * u
-	_text(ix, iy - 10 * u, "В КАРМАНАХ:", int(10 * u), DIM)
-	if game.inv.is_empty():
-		_text(ix, iy + 24 * u, "пусто", int(13 * u), Color(0.55, 0.52, 0.47))
+	# предмет в руках (единственный): иконка + имя + подсказка
+	var hx := W - 152.0 * u
+	var hy := H - 118.0 * u
+	if game.held_item != Items.NONE:
+		var hr := Rect2(hx, hy, 40 * u, 40 * u)
+		var pulse := 0.72 + 0.06 * sin(game.time * 2.6)
+		draw_rect(hr, Color(0.05, 0.05, 0.07, 0.78))
+		draw_rect(hr, Color(0.86, 0.68, 0.30, pulse), false, 1.4)
+		draw_texture_rect(Items.icon_texture(game.held_item), Rect2(hr.position + Vector2(3, 3) * u, Vector2(34, 34) * u), false)
+		_text(hx, hy + 58 * u, Items.display_name(game.held_item), int(12 * u), BONE)
+		var hhint := "G — положить" if game.held_item != Items.BOTTLE else "G — бросить"
+		_text(hx, hy + 74 * u, hhint, int(10 * u), DIM)
+		if game.held_item == Items.CROSSBOW:
+			_text(hx, hy + 88 * u, "стрелы: " + str(game.dart_ammo) + "/3", int(10 * u), Color(0.80, 0.62, 0.24))
 	else:
-		var shown := mini(game.inv.size(), 9)
-		for i in shown:
-			var id: int = game.inv[i]
-			var r := Rect2(ix + float(i) * 46.0 * u, iy, 40 * u, 40 * u)
-			draw_rect(r, Color(0.06, 0.06, 0.08, 0.72))
-			draw_rect(r, Color(0.55, 0.50, 0.42, 0.30), false, 1.0)
-			draw_texture_rect(Items.icon_texture(id), Rect2(r.position + Vector2(3, 3) * u, Vector2(34, 34) * u), false)
-		if game.inv.size() > shown:
-			_text(ix + float(shown) * 46.0 * u + 6 * u, iy + 26 * u, "+" + str(game.inv.size() - shown), int(14 * u), BONE)
+		_text(hx, hy + 44 * u, "руки пусты", int(11 * u), Color(0.45, 0.43, 0.40, 0.8))
 	# подсказка взаимодействия
 	var prompt_y := H - 92.0 * u
 	if game.interact_label != "":
@@ -506,40 +503,6 @@ func _draw_hud(W: float, H: float) -> void:
 		draw_rect(Rect2(0, 0, W, H), Color(0.75, 0.80, 1.0, game.lightning_fx * 0.30))
 	_vignette(W, H, 0.55)
 
-func _draw_minimap(W: float, H: float, u: float) -> void:
-	var lv: LevelData = game.world.levels[game.player.level]
-	var panel := Rect2(W - 132.0 * u, 66.0 * u, 108.0 * u, 108.0 * u)
-	_panel(panel, Color(0.02, 0.02, 0.03, 0.65), Color(0.50, 0.46, 0.40, 0.35), 1.0)
-	var cell := (96.0 * u) / float(maxi(lv.w, lv.h))
-	var ox := panel.position.x + 6.0 * u
-	var oy := panel.position.y + 6.0 * u
-	for y in lv.h:
-		for x in lv.w:
-			var t := lv.get_tile(x, y)
-			var c := Color(0.09, 0.09, 0.10, 0.9)
-			if not LevelData.SOLID[t]:
-				c = Color(0.30, 0.29, 0.26, 0.85)
-			if t == LevelData.DOOR or t == LevelData.FRONT:
-				c = Color(0.52, 0.35, 0.18, 0.95)
-			elif t == LevelData.HOLE:
-				c = Color(0.02, 0.02, 0.02, 0.95)
-			elif t == LevelData.GARAGE_DOOR:
-				c = Color(0.38, 0.39, 0.40, 0.95)
-			draw_rect(Rect2(ox + float(x) * cell, oy + float(y) * cell, cell + 0.4, cell + 0.4), c)
-	var pl := game.player_local()
-	var px := ox + pl.x * cell
-	var py := oy + pl.y * cell
-	var a := game.player.angle
-	var pts := PackedVector2Array([
-		Vector2(px + cos(a) * 5.0 * u, py + sin(a) * 5.0 * u),
-		Vector2(px + cos(a + 2.5) * 4.0 * u, py + sin(a + 2.5) * 4.0 * u),
-		Vector2(px + cos(a - 2.5) * 4.0 * u, py + sin(a - 2.5) * 4.0 * u),
-	])
-	draw_colored_polygon(pts, Color(0.95, 0.28, 0.20))
-	if game.granny.level == game.player.level:
-		var gp := Vector2(ox + game.granny.x * cell, oy + game.granny.y * cell)
-		draw_circle(gp, 2.6 * u, Color(0.85, 0.12, 0.10, 0.85))
-
 # ------------------------------------------------------------------ journal
 
 func _draw_journal(W: float, H: float) -> void:
@@ -560,18 +523,21 @@ func _draw_journal(W: float, H: float) -> void:
 	var lx := px + 30.0 * u
 	var rx := px + pw * 0.53
 	var y0 := py + 86.0 * u
-	_btext(lx, y0, "В карманах:", int(17 * u), Color(0.27, 0.16, 0.12))
+	_btext(lx, y0, "В руках:", int(17 * u), Color(0.27, 0.16, 0.12))
 	y0 += 32.0 * u
-	if game.inv.is_empty():
+	if game.held_item == Items.NONE:
 		_text(lx + 8 * u, y0, "пусто", int(13 * u), Color(0.36, 0.28, 0.20))
-	for i in game.inv.size():
-		if y0 > py + ph - 80.0 * u:
-			break
-		var id: int = game.inv[i]
-		draw_texture_rect(Items.icon_texture(id), Rect2(lx, y0 - 20 * u, 28 * u, 28 * u), false)
-		_text(lx + 38 * u, y0, Items.display_name(id), int(14 * u), Color(0.20, 0.16, 0.13))
-		_text(lx + 38 * u, y0 + 18 * u, Items.hint(id), int(11 * u), Color(0.39, 0.32, 0.24))
-		y0 += 48.0 * u
+	else:
+		draw_texture_rect(Items.icon_texture(game.held_item), Rect2(lx, y0 - 20 * u, 28 * u, 28 * u), false)
+		_text(lx + 38 * u, y0, Items.display_name(game.held_item), int(14 * u), Color(0.20, 0.16, 0.13))
+		_text(lx + 38 * u, y0 + 18 * u, Items.hint(game.held_item), int(11 * u), Color(0.39, 0.32, 0.24))
+	if game.held_item == Items.CROSSBOW:
+		y0 += 30.0 * u
+		_text(lx + 38 * u, y0, "Заряжено стрел: " + str(game.dart_ammo) + "/3", int(12 * u), Color(0.55, 0.40, 0.20))
+	y0 += 30.0 * u
+	_text(lx + 8 * u, y0, "Носить можно только одно. Остальное лежит на полу, где ты его положил.", int(11 * u), Color(0.39, 0.32, 0.24))
+	y0 += 22.0 * u
+	_text(lx + 8 * u, y0, "Планируй маршрут: за ключом, потом за монтировкой — и не попадись по дороге.", int(11 * u), Color(0.39, 0.32, 0.24))
 	var y1 := py + 86.0 * u
 	_btext(rx, y1, "Входная дверь:", int(17 * u), Color(0.27, 0.16, 0.12))
 	y1 += 30.0 * u

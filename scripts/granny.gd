@@ -22,6 +22,7 @@ var notice := 0.0
 var repath_t := 0.0
 var decision_t := 0.0
 var search_t := 0.0
+var search_snd_t := 0.0
 var stagger_t := 0.0
 var stagger_vis := 0.0
 var climb_t := 0.0
@@ -31,6 +32,7 @@ var hatch_x := 0.0
 var hatch_y := 0.0
 var attic_wish := 0
 var saw_player := false
+var lost_track := false  # была погоня → потом сыграть «потеряла»
 var lost_t := 0.0
 var speed_mul := 1.0
 var aggro := false
@@ -238,12 +240,20 @@ func update(dt: float, g: Node) -> void:
 			state = CHASE
 			scream_t = 1.4
 			aggro = true
+			lost_track = true
+			Audio.play3d("granny_gasps", g.world.get_root(level), Vector3(x, 1.4, y), 0.8, 1.0, 7.0)
 			var lines := ["А ВОТ И ТЫ, СОЛНЫШКО!", "СТОЙ, ВНУЧОК!", "Я ТЕБЯ ВИЖУ, ЗАИНЬКА!", "КУДА СОБРАЛСЯ БЕЗ УЖИНА?!"]
 			say(g, lines[randi() % lines.size()], 2.2)
 			Audio.play3d("scream", g.world.get_root(level), Vector3(x, 1.4, y), 0.9, 1.0, 9.0)
 			g.add_shake(0.7)
 	else:
 		notice = maxf(0.0, notice - dt * 0.55)
+	# потеряла след после погони — разочарованный выдох (один раз)
+	if lost_track and state != CHASE:
+		lost_track = false
+		Audio.play3d("granny_lost", g.world.get_root(level), Vector3(x, 1.4, y), 0.75, 0.95 + randf() * 0.1, 8.0)
+		var lost_lines := ["Куда же ты делся, заинька...", "Выходи, я не злая."]
+		say(g, lost_lines[randi() % lost_lines.size()], 2.2)
 
 	for n in g.noises:
 		if n.time < g.noise_seen:
@@ -296,6 +306,11 @@ func update(dt: float, g: Node) -> void:
 		SEARCH:
 			search_t -= dt
 			angle += sin(anim_t * 1.6) * dt * 1.4
+			search_snd_t -= dt
+			if search_snd_t <= 0.0:
+				search_snd_t = 2.2 + randf() * 2.4
+				var search_snd := "granny_hum" if randf() < 0.5 else "granny_rummage"
+				Audio.play3d(search_snd, g.world.get_root(level), Vector3(x, 1.2, y), 0.42, 0.92 + randf() * 0.16, 5.0)
 			if search_t <= 0.0:
 				state = PATROL
 				path.clear()
@@ -363,7 +378,16 @@ func update(dt: float, g: Node) -> void:
 	if step_acc >= 0.78:
 		step_acc = 0.0
 		if same_level and not g.player.hidden and not g.player.dead:
-			Audio.play3d("granny_step", g.world.get_root(level), Vector3(x, 0.6, y), 0.5 + randf() * 0.2, 0.85 + randf() * 0.2, 6.0)
+			var snd := "granny_step"
+			var lv_g: LevelData = g.world.levels[level]
+			var tt := lv_g.get_tile(int(floor(x)), int(floor(y)))
+			if level == 1:
+				snd = "granny_step2"  # старые половицы чердака
+			elif tt == LevelData.TILEW or level == 2 or level == 3:
+				snd = "granny_step3"  # кафель/бетон
+			var pl2: Vector2 = g.player_local()
+			var occ: float = Audio.occlusion_factor(lv_g, Vector2(x, y), pl2)
+			Audio.play3d(snd, g.world.get_root(level), Vector3(x, 0.6, y), (0.5 + randf() * 0.2) * (1.4 if occ < 1.0 else 1.0), 0.85 + randf() * 0.2, 6.0, 0.0, occ)
 	# Гул при спокойном состоянии — мягкий ориентир, где бабушка.
 	if state == PATROL or state == SEARCH or state == INVESTIGATE:
 		hum_t -= dt

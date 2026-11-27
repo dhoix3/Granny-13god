@@ -24,7 +24,8 @@ const TK_HINT := 0
 const TK_OK := 1
 const TK_ERR := 2
 
-const SPIDERS := [Vector2(7.0, 6.0), Vector2(13.0, 10.75), Vector2(9.0, 14.25)]
+# Музыкальные состояния: menu / ambient (обследование) / tension (рядом,
+# что-то услышала) / chase (погоня) / return (после погони, «отпустило»).
 
 class DiffData:
 	var name := ""
@@ -70,7 +71,12 @@ var day := 1
 var max_days := 5
 var time := 0.0
 var play_time := 0.0
-var inv: Array[int] = []
+# ОДИН предмет в руках: 0 = пусто. Уроненные/отложенные предметы лежат
+# в мире (ground_items) и сохраняются.
+var held_item := 0
+var dart_ammo := 0  # стрелы внутри арбалета (арбалет в руках)
+var ground_items: Array[Dictionary] = []
+var chase_cool := 0.0  # после погони: спокойный трек, пока не отпустит
 var locks: Array[bool] = [false, false, false]
 var lock4 := false
 var last_win := WIN_DOOR
@@ -79,7 +85,6 @@ var car_battery_installed := false
 var noises: Array[Dictionary] = []
 var subs: Array[Dictionary] = []
 var noise_seen := 0.0
-var minimap := true
 var attic_alert_t := 0.0
 
 var target_kind := 0
@@ -366,15 +371,19 @@ func _on_key(k: int) -> void:
 			if k == KEY_ESCAPE:
 				_set_state(STATE_PAUSE)
 				pause_idx = 0
-			elif k == KEY_M:
-				minimap = not minimap
 			elif k == KEY_TAB:
 				journal = not journal
 				player.velocity = Vector3.ZERO
 				if not journal and Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
 					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 			elif k == KEY_G:
-				throw_bottle()
+				# G: бутылка в руках — бросить; другой предмет — положить на пол
+				if held_item == Items.BOTTLE:
+					throw_bottle()
+				elif held_item != Items.NONE:
+					drop_held()
+				else:
+					toast_msg("Руки пусты.", 1.6, TK_HINT)
 			elif k == KEY_F:
 				toggle_flash()
 			elif k == KEY_Q:
@@ -748,8 +757,10 @@ func start_game() -> void:
 	diff = diffs[diff_index]
 	max_days = diff.days
 	day = 1
-	inv.clear()
+	held_item = Items.NONE
+	dart_ammo = 0
 	player.set_held(0)
+	clear_ground_items()
 	locks = [false, false, false]
 	lock4 = false
 	last_win = WIN_DOOR
@@ -782,6 +793,7 @@ func start_game() -> void:
 	heart_t = 0.0
 	ambient_t = 0.0
 	attic_alert_t = 0.0
+	chase_cool = 0.0
 	for b in bloods:
 		if is_instance_valid(b):
 			b.queue_free()
@@ -791,6 +803,8 @@ func start_game() -> void:
 			t.queue_free()
 	throwns.clear()
 	world.clear_traps()
+	# свежая раздача предметов по seed (детерминированная)
+	HouseData.distribute_items(world.levels, HouseData._data()["item_anchors"], seed)
 	for lv in world.levels:
 		for c in lv.containers:
 			c.searched = false
@@ -815,7 +829,7 @@ func place_starting_traps() -> void:
 				continue
 			if lv.door_at(x, y) != null:
 				continue
-			if absi(x - 5) <= 2 and absi(y - 10) <= 2:
+			if absi(x - 17) <= 2 and absi(y - 28) <= 2:
 				continue
 			if absi(x - 24) <= 2 and absi(y - 27) <= 2:
 				continue
@@ -843,8 +857,8 @@ func place_starting_traps() -> void:
 		placed += 1
 
 func respawn_player() -> void:
-	player.set_held(inv[0] if not inv.is_empty() else 0)
-	player.place_at(0, 5.5, 10.5, atan2(2.5, 0.5))
+	var lv: LevelData = world.levels[0]
+	player.place_at(0, lv.spawn_x, lv.spawn_y, lv.spawn_a)
 	player.reset_state()
 	granny.spawn(world.levels[0], 24.5, 27.5, -PI * 0.5)
 	granny.trap_t = 10.0 + rng.randf() * 8.0
@@ -924,6 +938,9 @@ func _update_play(dt: float) -> void:
 	granny.update(dt, self)
 	_update_detect(dt)
 
+	if chase_cool > 0.0:
+		chase_cool = maxf(0.0, chase_cool - dt)
+
 	for i in range(noises.size() - 1, -1, -1):
 		if time - float(noises[i].time) > 2.5:
 			noises.remove_at(i)
@@ -946,13 +963,16 @@ func _update_play(dt: float) -> void:
 		Audio.play("thunder", 0.55, 0.7 + rng.randf() * 0.4)
 
 func _update_music_intensity() -> void:
-	# Музыкальные состояния: эмбиент → напряжение (она рядом/что-то услышала)
-	# → погоня (преследует на том же этаже).
+	# Состояния: ambient (осматриваюсь) → tension (она рядом или что-то услышала)
+	# → chase (погоня) → return (погоня кончилась, отпустило — музыка выдоха).
 	if Audio == null or player == null or granny == null:
 		return
 	var want := "music_ambient"
 	if granny.state == GrannyAI.CHASE and granny.level == player.level:
 		want = "music_chase"
+		chase_cool = 16.0
+	elif chase_cool > 0.0 and granny.level == player.level:
+		want = "music_return"
 	elif (granny.state == GrannyAI.INVESTIGATE and granny.level == player.level) or granny.notice > 0.35:
 		want = "music_tension"
 	Audio.set_music(want)
@@ -963,20 +983,47 @@ func _update_detect(dt: float) -> void:
 	detect_fx = move_toward(detect_fx, target if seen else 0.0, dt * 3.0)
 
 func _update_atmosphere(dt: float) -> void:
+	# амбиентная петля этажа: ветер в доме / чердак / подвал
+	if Audio._amb_target != _ambient_track():
+		Audio.set_ambient(_ambient_track())
 	ambient_t -= dt
 	if ambient_t <= 0.0:
-		ambient_t = 14.0 + rng.randf() * 26.0
+		ambient_t = 11.0 + rng.randf() * 22.0
 		var r := rng.randf()
-		if r < 0.5:
-			# скрип из случайной точки рядом с игроком — создаёт объём
+		var pl := player_local()
+		if r < 0.22:
+			# скрип из случайной точки рядом — создаёт объём
 			var ang := rng.randf() * TAU
 			var rad := 3.0 + rng.randf() * 5.0
-			var pl := player_local()
 			Audio.play3d("creak", world.get_root(player.level), Vector3(pl.x + cos(ang) * rad, 1.8, pl.y + sin(ang) * rad), 0.24, 0.55 + rng.randf() * 0.4, 4.0)
-		elif r < 0.7:
+		elif r < 0.36:
+			Audio.play3d("floor_creak2", world.get_root(player.level), Vector3(pl.x + cos(rng.randf() * TAU) * 2.2, 0.1, pl.y + sin(rng.randf() * TAU) * 2.2), 0.20, 0.9 + rng.randf() * 0.3, 3.0)
+		elif r < 0.50:
+			Audio.play3d("house_settle", world.get_root(player.level), Vector3(pl.x + rng.randf_range(-4, 4), 2.2, pl.y + rng.randf_range(-4, 4)), 0.40, 0.85 + rng.randf() * 0.3, 9.0)
+		elif r < 0.62:
+			Audio.play("distant_noise", 0.30, 0.85 + rng.randf() * 0.3)
+		elif r < 0.72:
+			Audio.play3d("something_falls", world.get_root(player.level), Vector3(pl.x + rng.randf_range(-3.5, 3.5), 1.0, pl.y + rng.randf_range(-3.5, 3.5)), 0.42, 0.9 + rng.randf() * 0.25, 7.0)
+		elif r < 0.82 and player.level == 0:
+			# царапанье окна снаружи — только в доме
+			var wins := []
+			for y in range(world.levels[0].h):
+				for x in range(world.levels[0].w):
+					if world.levels[0].get_tile(x, y) == LevelData.WINDOW:
+						wins.append(Vector2(x + 0.5, y + 0.5))
+			if wins.size() > 0:
+				var w2: Vector2 = wins[rng.randi_range(0, wins.size() - 1)]
+				Audio.play3d("window_scratch", world.get_root(0), Vector3(w2.x, 1.4, w2.y), 0.38, 0.9 + rng.randf() * 0.2, 5.0)
+		elif r < 0.92:
 			Audio.play("whisper", 0.25, 0.8)
 		else:
 			Audio.play("thunder", 0.28, 0.8)
+
+func _ambient_track() -> String:
+	match player.level:
+		1: return "attic_loop"
+		3: return "cellar_loop"
+	return "wind_loop"
 
 func _update_caught(dt: float) -> void:
 	caught_t += dt
@@ -1032,14 +1079,123 @@ func add_shake(amount: float) -> void:
 	shake = maxf(shake, amount)
 
 func has_item(id: int) -> bool:
-	return inv.has(id)
+	return held_item == id
 
+# Взять предмет в руки (руки обязаны быть свободны — проверяет вызывающий).
+func give_item(id: int) -> void:
+	if id == Items.NONE:
+		return
+	held_item = int(id)
+	player.set_held(held_item)
+	pickup_item = held_item
+	pickup_t = 2.4
+	if held_item == Items.BATTERY:
+		player.battery = minf(1.0, player.battery + 0.55)
+	if held_item == Items.BANDAGE:
+		player.health = minf(1.0, player.health + 0.5)
+	if held_item == Items.PHOTO:
+		max_days += 1
+		photo_taken = true
+	if held_item == Items.CROSSBOW:
+		dart_ammo = 0
+
+# Освободить руки (использованный/переданный предмет исчезает из мира).
 func remove_item(id: int) -> void:
-	var idx := inv.find(id)
-	if idx >= 0:
-		inv.remove_at(idx)
-	if player != null and player.held_id == id:
-		player.set_held(inv[0] if not inv.is_empty() else 0)
+	if held_item != id:
+		return
+	held_item = Items.NONE
+	player.set_held(0)
+
+# Положить предмет на пол в текущей точке: остаётся лежать в мире.
+func drop_held(silent := false) -> void:
+	if held_item == Items.NONE or player.hidden:
+		return
+	var pl := player_local()
+	# чуть впереди взгляда, чтобы предмет не оказался внутри игрока
+	var dx := cos(player.angle) * 0.55
+	var dy := sin(player.angle) * 0.55
+	var lv: LevelData = world.levels[player.level]
+	var gx := pl.x + dx
+	var gy := pl.y + dy
+	if lv.solid_at(gx, gy):
+		gx = pl.x
+		gy = pl.y
+	spawn_ground_item(held_item, player.level, gx, gy)
+	held_item = Items.NONE
+	player.set_held(0)
+	if not silent:
+		Audio.play("item_drop", 0.7, 1.0)
+		emit_noise(gx, gy, 2.2, "предмет")
+
+func spawn_ground_item(id: int, level_id: int, x: float, y: float) -> void:
+	var lv: LevelData = world.levels[level_id]
+	var root := world.get_root(level_id)
+	var n := Node3D.new()
+	n.name = "GroundItem"
+	root.add_child(n)
+	n.position = Vector3(x, 0.32, y)
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.34, 0.34)
+	var mi := MeshInstance3D.new()
+	mi.mesh = quad
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = Items.icon_texture(id)
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	m.alpha_scissor_threshold = 0.35
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	n.add_child(mi)
+	# тень-кружок на полу
+	var sh := MeshInstance3D.new()
+	var dq := QuadMesh.new()
+	dq.size = Vector2(0.30, 0.30)
+	sh.mesh = dq
+	var sm := StandardMaterial3D.new()
+	sm.albedo_color = Color(0, 0, 0, 0.30)
+	sm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	sm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	sh.material_override = sm
+	sh.rotation.x = -PI * 0.5
+	sh.position = Vector3(0, -0.305, 0)
+	sh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	n.add_child(sh)
+	ground_items.append({"id": id, "level": level_id, "x": x, "y": y, "node": n, "t": rng.randf() * TAU})
+
+func clear_ground_items() -> void:
+	for gi in ground_items:
+		var n = gi.get("node")
+		if n != null and is_instance_valid(n):
+			n.queue_free()
+	ground_items.clear()
+
+# Подобрать предмет с пола (руки уже свободны).
+func take_ground_item(idx: int) -> void:
+	if idx < 0 or idx >= ground_items.size():
+		return
+	var gi: Dictionary = ground_items[idx]
+	var n = gi.get("node")
+	if n != null and is_instance_valid(n):
+		n.queue_free()
+	ground_items.remove_at(idx)
+	var id := int(gi["id"])
+	if held_item == Items.CROSSBOW and id == Items.DART:
+		# стрела заряжается в арбалет, оставаясь в руках у арбалета
+		if dart_ammo < 3:
+			dart_ammo += 1
+			Audio.play("crossbow_reload", 0.6, 1.1)
+			toast_msg("Стрела заряжена (%d/3)." % dart_ammo, 2.2, TK_OK)
+		else:
+			# арбалет полон — стрела остаётся на полу
+			spawn_ground_item(id, int(gi["level"]), float(gi["x"]), float(gi["y"]))
+			toast_msg("Арбалет уже заряжен.", 2.2, TK_HINT)
+		return
+	give_item(id)
+	Audio.play("pickup", 0.7, 1.0)
+	toast_msg("Взято: " + Items.display_name(id), 2.6, TK_OK)
+	push_subtitle(Items.hint(id), 3.4, false)
 
 func count_locks() -> int:
 	var n := 0
@@ -1107,20 +1263,48 @@ func update_target_scan() -> void:
 			prompt = "Спрятаться: " + str(best.hide.label)
 			return
 		if best.container != null:
+			target_kind = 2
+			target_obj = best.container
 			if best.container.searched:
-				if best.hide != null:
+				if best.container.item_id != Items.NONE:
+					if held_item != Items.NONE:
+						prompt = "Там: " + Items.display_name(best.container.item_id) + " — руки заняты"
+					else:
+						prompt = "Поднять: " + Items.display_name(best.container.item_id)
+				elif best.hide != null:
 					target_kind = 3
 					target_obj = best.hide
 					prompt = "Спрятаться: " + str(best.hide.label)
 					return
-				target_kind = 2
-				target_obj = best.container
-				prompt = str(best.name) + " — пусто"
-				return
-			target_kind = 2
-			target_obj = best.container
-			prompt = "Обыскать: " + str(best.container.label)
+				else:
+					prompt = str(best.name) + " — пусто"
+			else:
+				prompt = "Обыскать: " + str(best.container.label)
 			return
+
+	# предметы на полу рядом (уроненные/отложенные)
+	var gi_best := -1
+	var gi_dist := 2.1
+	for gi in ground_items.size():
+		var gi_d: Dictionary = ground_items[gi]
+		if int(gi_d["level"]) != player.level:
+			continue
+		var vx2: float = float(gi_d["x"]) - px
+		var vy2: float = float(gi_d["y"]) - pz
+		var dist2 := sqrt(vx2 * vx2 + vy2 * vy2)
+		if dist2 < gi_dist:
+			gi_dist = dist2
+			gi_best = gi
+	if gi_best >= 0 and held_item == Items.NONE:
+		target_kind = 10
+		target_obj = gi_best
+		prompt = "Поднять: " + Items.display_name(int(ground_items[gi_best]["id"]))
+		return
+	elif gi_best >= 0:
+		target_kind = 10
+		target_obj = gi_best
+		prompt = Items.display_name(int(ground_items[gi_best]["id"])) + " — освободи руки (G)"
+		return
 
 	var dstep := 0.3
 	while dstep <= 2.1:
@@ -1142,15 +1326,11 @@ func update_target_scan() -> void:
 			return
 		if t == LevelData.HOLE:
 			target_kind = 4
-			if player.level == 0:
-				if iy <= 5:
-					prompt = "Залезть на чердак"
-				elif ix >= 13:
-					prompt = "Спуститься в гараж"
-				else:
-					prompt = "Спуститься в паучий подвал"
+			var h = hatch_at(lv, ix, iy)
+			if h != null:
+				prompt = str(h["verb"])
 			else:
-				prompt = "Спуститься в дом"
+				prompt = "Лестница"
 			return
 		if LevelData.SOLID[t]:
 			break
@@ -1243,30 +1423,41 @@ func update_interaction(dt: float) -> void:
 				player.act_push = maxf(player.act_push, 0.8)
 		2:
 			var c = target_obj
-			if e_down and not c.searched:
+			# найденный раньше предмет можно забрать пустыми руками
+			if e_hit and c.searched and c.item_id != Items.NONE and held_item == Items.NONE:
+				var taken := int(c.item_id)
+				c.item_id = Items.NONE
+				give_item(taken)
+				Audio.play("pickup", 0.7, 1.0)
+				player.act_push = maxf(player.act_push, 0.6)
+				toast_msg("Взято: " + Items.display_name(taken), 3.0, TK_OK)
+				push_subtitle(Items.hint(taken), 3.4, false)
+			elif e_down and not c.searched:
 				interact_prog += dt / 0.95
 				interact_label = "Обыскиваю..."
+				# шелест ящика по ходу обыска
+				var prev_prog: float = interact_prog - dt / 0.95
+				if int(interact_prog * 4.0) != int(prev_prog * 4.0):
+					Audio.play("drawer", 0.30, 0.95 + rng.randf() * 0.15)
 				if interact_prog >= 1.0:
 					interact_prog = 0.0
 					c.searched = true
 					Audio.play("search", 0.6, 1.0)
 					emit_noise(player_local().x, player_local().y, 3.4, "обыск")
 					if c.item_id != Items.NONE:
-						inv.append(c.item_id)
-						player.set_held(c.item_id)
-						pickup_item = c.item_id
-						pickup_t = 2.4
-						player.act_push = maxf(player.act_push, 0.6)
-						Audio.play("pickup", 0.7, 1.0)
-						toast_msg("+ " + Items.display_name(c.item_id), 3.0, TK_OK)
-						push_subtitle(Items.hint(c.item_id), 3.4, false)
-						if c.item_id == Items.BATTERY:
-							player.battery = minf(1.0, player.battery + 0.55)
-						if c.item_id == Items.BANDAGE:
-							player.health = minf(1.0, player.health + 0.5)
-						if c.item_id == Items.PHOTO:
-							max_days += 1
-							photo_taken = true
+						if held_item != Items.NONE:
+							# руки заняты: показываем находку, предмет остаётся в контейнере
+							toast_msg("Там лежит: " + Items.display_name(c.item_id) + ". Освободи руки (G).", 3.6, TK_HINT)
+							push_subtitle(Items.hint(c.item_id), 3.4, false)
+							player.act_push = maxf(player.act_push, 0.6)
+						else:
+							var found := int(c.item_id)
+							c.item_id = Items.NONE
+							give_item(found)
+							Audio.play("pickup", 0.7, 1.0)
+							player.act_push = maxf(player.act_push, 0.6)
+							toast_msg("Взято: " + Items.display_name(found), 3.0, TK_OK)
+							push_subtitle(Items.hint(found), 3.4, false)
 					else:
 						toast_msg("Пусто...", 1.8, TK_HINT)
 			else:
@@ -1278,7 +1469,7 @@ func update_interaction(dt: float) -> void:
 		4:
 			if e_down:
 				interact_prog += dt / 0.7
-				interact_label = "Лезем наверх..." if player.level == 0 else "Спускаемся..."
+				interact_label = "Лезу по лестнице..."
 				if interact_prog >= 1.0:
 					interact_prog = 0.0
 					switch_level()
@@ -1318,6 +1509,7 @@ func update_interaction(dt: float) -> void:
 							lock4 = true
 						else:
 							locks[next_lock] = true
+						remove_item(need_item)  # предмет уходит в замок
 						Audio.play("unlock", 0.7, 1.0)
 						emit_noise(player_local().x, player_local().y, 7.0, "замок")
 						world.set_front_locks(count_locks())
@@ -1396,7 +1588,11 @@ func update_interaction(dt: float) -> void:
 						win_game(WIN_SECRET)
 			else:
 				interact_prog = maxf(0.0, interact_prog - dt * 1.5)
-	if target_kind != 2 and target_kind != 4 and target_kind != 5 and target_kind != 7 and target_kind != 8 and target_kind != 9:
+		10:
+			# предмет на полу: поднять (руки уже проверены на пустоту)
+			if e_hit:
+				take_ground_item(int(target_obj))
+	if target_kind != 2 and target_kind != 4 and target_kind != 5 and target_kind != 7 and target_kind != 8 and target_kind != 9 and target_kind != 10:
 		interact_prog = maxf(0.0, interact_prog - dt * 3.0)
 
 func enter_hide(h) -> void:
@@ -1417,46 +1613,41 @@ func exit_hide() -> void:
 	var pl := player_local()
 	emit_noise(pl.x, pl.y, 2.4, "шкаф")
 
+# Люк (лестница) на тайле: данные из house.json.
+func hatch_at(lv: LevelData, x: int, y: int) -> Dictionary:
+	for h in lv.hatches:
+		if int(h["x"]) == x and int(h["y"]) == y:
+			return h
+	return {}
+
 func switch_level() -> void:
-	var old_lvl := player.level
+	var lv: LevelData = world.levels[player.level]
 	var pl := player_local()
-	if player.level == 2:
-		player.place_at(0, 14.5, 27.6, -PI * 0.5)
-		Audio.play("climb", 0.6, 0.9)
-		emit_noise(14.5, 28.5, 6.0, "лестница")
-	elif player.level == 0 and pl.y < 10.0:
-		player.place_at(1, 4.5, 19.0, -PI * 0.5)
-		Audio.play("climb", 0.6, 1.0)
-		emit_noise(15.5, 3.5, 6.0, "лестница")
-		push_subtitle("Чердак. Пахнет пылью и кошкой.", 3.2, false)
-		if not cat.fed and not cat.angry:
-			cat.alert(self, "мяу")
-	elif player.level == 0 and pl.y > 25.0 and pl.x < 13.0:
-		player.place_at(3, 4.5, 16.0, -PI * 0.5)
-		Audio.play("climb", 0.6, 0.8)
+	var h := hatch_at(lv, int(floor(pl.x)), int(floor(pl.y)))
+	if h.is_empty():
+		# страховка: ищем ближайший люк в радиусе 1 плитки
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				if h.is_empty():
+					h = hatch_at(lv, int(floor(pl.x)) + dx, int(floor(pl.y)) + dy)
+	if h.is_empty():
+		return
+	var to := int(h["to"])
+	player.place_at(to, float(h["tx"]), float(h["ty"]), float(h["ta"]))
+	Audio.play("stairs", 0.6, 0.9 + rng.randf() * 0.15)
+	emit_noise(float(h["x"]) + 0.5, float(h["y"]) + 0.5, 6.0, str(h["noise"]))
+	if h.has("subtitle") and str(h["subtitle"]) != "":
+		push_subtitle(str(h["subtitle"]), 3.2, false)
+	if to == 1 and not cat.fed and not cat.angry:
+		cat.alert(self, "мяу")
+	if to == 3:
 		Audio.play("spider_hiss", 0.45, 0.85)
-		emit_noise(4.5, 17.5, 6.0, "лестница")
-		push_subtitle("Подвал. Что-то шуршит. Что-то с восемью ногами.", 3.4, false)
-	elif player.level == 0:
-		player.place_at(2, 4.5, 12.0, -PI * 0.5)
-		Audio.play("climb", 0.6, 0.85)
-		emit_noise(4.5, 13.5, 6.0, "лестница")
-		push_subtitle("Гараж. Пахнет бензином и олигархией.", 3.2, false)
-	elif player.level == 3:
-		player.place_at(0, 5.5, 28.4, -PI * 0.5)
-		Audio.play("climb", 0.6, 0.9)
-		emit_noise(5.5, 29.5, 6.0, "лестница")
-	else:
-		player.place_at(0, 15.5, 4.0, PI * 0.5)
-		Audio.play("climb", 0.6, 0.9)
-		emit_noise(15.5, 3.5, 6.0, "лестница")
 	player.pitch = 0.0
 	interact_prog = 0.0
 	shake = 0.15
 	climb_fx = 1.0
 	player.act_push = 0.6
 	player.apply_camera()
-	var _unused := old_lvl
 
 func update_traps(dt: float) -> void:
 	if player.trap_stuck > 0.0:
@@ -1486,8 +1677,9 @@ func update_spiders(dt: float) -> void:
 	if diff.god_mode or player.level != 3:
 		return
 	var pl := player_local()
-	for i in SPIDERS.size():
-		var s: Vector2 = SPIDERS[i]
+	var pts: Array[Vector2] = world.levels[3].spiders
+	for i in pts.size():
+		var s: Vector2 = pts[i]
 		var dx := pl.x - s.x
 		var dy := pl.y - s.y
 		if dx * dx + dy * dy > 0.55 * 0.55:
@@ -1505,11 +1697,11 @@ func update_spiders(dt: float) -> void:
 func throw_bottle() -> void:
 	if player.hidden or player.dead:
 		return
-	var idx := inv.find(Items.BOTTLE)
-	if idx < 0:
-		toast_msg("Нечего бросать.", 1.6, TK_ERR)
+	if held_item != Items.BOTTLE:
+		toast_msg("Нужна бутылка в руках.", 1.6, TK_ERR)
 		return
-	inv.remove_at(idx)
+	held_item = Items.NONE
+	player.set_held(0)
 	var pl := player_local()
 	var dirx := cos(player.angle)
 	var diry := sin(player.angle)
@@ -1546,15 +1738,14 @@ func fire_crossbow() -> void:
 	if player.hidden or player.dead:
 		return
 	if not has_item(Items.CROSSBOW):
-		toast_msg("Нужен арбалет.", 1.6, TK_ERR)
+		toast_msg("Нужен арбалет в руках.", 1.6, TK_ERR)
 		return
 	if player.reload_t > 0.0:
 		return
-	var di := inv.find(Items.DART)
-	if di < 0:
-		toast_msg("Нет стрел для арбалета.", 1.8, TK_ERR)
+	if dart_ammo <= 0:
+		toast_msg("Нет стрел. Найди и подними (руки должны держать арбалет).", 2.2, TK_ERR)
 		return
-	inv.remove_at(di)
+	dart_ammo -= 1
 	player.gun_t = 1.0
 	player.reload_t = 1.1
 	Audio.play("crossbow_shot", 0.9, 1.0)
@@ -1619,6 +1810,7 @@ func on_caught() -> void:
 	caught_t = 0.0
 	player.dead = true
 	deaths += 1
+	drop_held(true)  # выронил всё при поимке — предмет остаётся лежать
 	shake = 1.5
 	Audio.play3d("scream", world.get_root(player.level), Vector3(granny.x, 1.5, granny.y), 1.0, 0.95, 12.0)
 	Audio.play("snap", 0.6, 0.7)
