@@ -79,20 +79,23 @@ func run(pgame: GrannyGame) -> void:
 	g.player.trap_stuck = 0.0
 
 	# --- закрытая дверь физически не пускает ---
+	# 150 кадров, а не 55: в headless process-кадры идут быстрее physics-тиков
+	# (60 Гц), при 55 кадрах игрок может просто не дойти до двери — проверка
+	# должна зависеть от геометрии, а не от темпа кадров среды.
 	var door0 = lv0.doors[0]
 	door0.open = false
 	g.world.update_doors(1.0)
 	g.player.place_at(0, door0.x + 0.5, door0.y + 2.2, -PI * 0.5)
 	await _frames(2)
 	_press(KEY_W, true)
-	await _frames(55)
+	await _frames(150)
 	_press(KEY_W, false)
 	var blocked := g.player.global_position - lv0.origin
 	_check(blocked.z > 13.5, "closed door blocks the player (z=%.2f)" % blocked.z)
 	door0.open = true
 	g.world.update_doors(1.0)
 	_press(KEY_W, true)
-	await _frames(55)
+	await _frames(150)
 	_press(KEY_W, false)
 	var through := g.player.global_position - lv0.origin
 	_check(through.z < 13.2, "open door lets the player through (z=%.2f)" % through.z)
@@ -371,6 +374,212 @@ func run(pgame: GrannyGame) -> void:
 	_check(g.debug_on, "F1 debug overlay toggles")
 	await _shot("17_debug")
 	g._on_key(KEY_F1)
+
+	# --- НАСТРОЙКИ: экран, изменение, применение, сохранение ---
+	var sens_before: float = g.settings.mouse_sensitivity
+	var shadows_before: bool = g.settings.flashlight_shadows
+	g._set_state(g.STATE_TITLE)
+	g.menu_idx = 4
+	g._activate_title_item()
+	_check(g.state == g.STATE_SETTINGS, "title menu opens settings")
+	g.settings_idx = 3
+	g._on_key(KEY_RIGHT)
+	_check(absf(g.settings.mouse_sensitivity - (sens_before + 0.1)) < 0.001, "right increases mouse sensitivity")
+	g._on_key(KEY_LEFT)
+	g._on_key(KEY_LEFT)
+	_check(g.settings.mouse_sensitivity < sens_before, "left decreases mouse sensitivity")
+	g.settings.mouse_sensitivity = sens_before
+	g.settings_idx = 6
+	g._cycle_setting(6)
+	_check(g.settings.flashlight_shadows != shadows_before, "flashlight shadows toggles")
+	_check(g.player.flashlight.shadow_enabled == g.settings.flashlight_shadows, "shadow setting applies to flashlight")
+	g._cycle_setting(6)
+	_check(g.settings.flashlight_shadows == shadows_before, "flashlight shadows restored")
+	await _frames(2)
+	await _shot("18_settings")
+	g._on_key(KEY_ESCAPE)
+	_check(g.state == g.STATE_TITLE, "settings Esc returns to title")
+	g.settings.save_settings()
+	var s_reload := GameSettings.load_settings()
+	_check(absf(s_reload.mouse_sensitivity - g.settings.mouse_sensitivity) < 0.001, "settings persist to disk")
+	g.settings.save_settings()
+
+	# --- проводка настроек в игру ---
+	g.settings.invert_y = true
+	_check(g.invert_look(), "invert_y reaches player look")
+	g.settings.invert_y = false
+	_check(not g.invert_look(), "invert_y off")
+	g.settings.mouse_sensitivity = 2.0
+	_check(absf(g.look_scale() - 2.0) < 0.001, "sensitivity reaches look scale")
+	g.settings.mouse_sensitivity = sens_before
+
+	# --- F11 синхронизирует настройку полного экрана ---
+	var fs_before := g.settings.fullscreen
+	g._on_key(KEY_F11)
+	_check(g.settings.fullscreen != fs_before, "F11 toggles fullscreen setting")
+	g._on_key(KEY_F11)
+	_check(g.settings.fullscreen == fs_before, "F11 toggles fullscreen back")
+	g.settings.save_settings()
+
+	# --- СОХРАНЕНИЯ: запись, метаданные, загрузка состояния ---
+	g.diff_index = 1
+	g.start_game()
+	g._set_state(g.STATE_PLAY)
+	g.fade_t = 0.0
+	g.inv.append(Items.KEY)
+	g.locks[0] = true
+	g.play_time = 77.0
+	g.player.place_at(0, 10.5, 8.5, 1.0)
+	_check(SaveSystem.save_run(g, SaveSystem.SLOTS[0]), "save_run writes slot1")
+	var meta := SaveSystem.read_meta(SaveSystem.SLOTS[0])
+	_check(meta.exists, "slot1 meta exists")
+	_check(meta.day == 1 and meta.locks == 1 and meta.max_days == 5, "slot1 meta fields correct")
+	_check(SaveSystem.latest_slot() != "", "latest slot found")
+	g.inv.clear()
+	g.locks[0] = false
+	g.day = 3
+	g.play_time = 999.0
+	g.player.place_at(0, 24.5, 27.5, 2.5)
+	var cont0 = g.world.levels[0].containers[0]
+	cont0.searched = true
+	_check(SaveSystem.load_run(g, SaveSystem.SLOTS[0]), "load_run restores slot1")
+	_check(g.day == 1, "load restores day")
+	_check(g.max_days == 5, "load restores max days")
+	_check(g.locks[0], "load restores locks")
+	_check(g.inv.has(Items.KEY), "load restores inventory")
+	_check(absf(g.play_time - 77.0) < 0.5, "load restores play time")
+	_check(g.player.level == 0, "load restores player level")
+	var plp := g.player_local()
+	_check(Vector2(plp.x - 10.5, plp.y - 8.5).length() < 0.6, "load restores position")
+	_check(not cont0.searched, "load resets searched containers")
+	_check(g.state == g.STATE_PLAY, "load enters play state")
+	_check(g.diff.name == "НОРМАЛЬНО", "load restores difficulty")
+
+	# --- экраны сохранения/загрузки через меню паузы ---
+	g._set_state(g.STATE_PAUSE)
+	g.pause_idx = 1
+	g._activate_pause_item()
+	_check(g.state == g.STATE_SAVE, "pause opens save screen")
+	await _frames(2)
+	await _shot("19_saves")
+	g.save_idx = 2  # ALL_SLOTS[2] == "slot2"
+	g._activate_save_slot()
+	_check(g.state == g.STATE_PAUSE, "saving returns to pause")
+	_check(SaveSystem.read_meta(SaveSystem.SLOTS[1]).exists, "slot2 written from UI")
+	g._set_state(g.STATE_PAUSE)
+	g.pause_idx = 2
+	g._activate_pause_item()
+	_check(g.state == g.STATE_LOAD, "pause opens load screen")
+	g._on_key(KEY_ESCAPE)
+	_check(g.state == g.STATE_PAUSE, "load screen Esc returns to pause")
+	g._set_state(g.STATE_TITLE)
+	g.menu_idx = 0
+	g._activate_title_item()
+	_check(g.state == g.STATE_PLAY, "continue loads latest save")
+
+	# --- музыка и 3D-звук ---
+	_check(Audio.streams.has("music_menu") and Audio.streams.has("music_ambient"), "music tracks generated")
+	_check(Audio.music_player != null, "music player exists")
+	_check(Audio.streams.has("hum"), "granny hum generated")
+	Audio.set_music("music_ambient")
+	await g.get_tree().create_timer(1.2).timeout
+	_check(Audio.music_track == "music_ambient", "ambient music switched")
+	_check(Audio.music_player.playing, "music is playing")
+	var root0: Node3D = g.world.get_root(0)
+	var ch := root0.get_child_count()
+	Audio.play3d("break", root0, Vector3(6, 1.0, 8), 0.5, 1.0)
+	_check(root0.get_child_count() == ch + 1, "play3d spawns positional node")
+
+	# --- мышь в меню: ховер по прямоугольникам ---
+	g._set_state(g.STATE_TITLE)
+	await _frames(2)  # даём _draw_title перестроить прямоугольники кликов
+	var rects := g.ui.hover_rects
+	_check(rects.size() == g.menu_items.size(), "title menu exposes click rects")
+	var all_cover := true
+	for i in rects.size():
+		var center: Vector2 = rects[i].get_center()
+		var covered := false
+		for j in rects.size():
+			if rects[j].has_point(center):
+				covered = true
+				break
+		if not covered:
+			all_cover = false
+	_check(all_cover, "every menu rect covers its own center")
+	g.menu_idx = 2
+	g._activate_title_item()
+	_check(g.state == g.STATE_LOAD, "title menu opens load screen")
+	g._on_key(KEY_ESCAPE)
+	_check(g.state == g.STATE_TITLE, "load screen Esc from title returns to title")
+
+	# --- мышь в паузе: ховер-прямоугольники строятся для паузы ---
+	g._set_state(g.STATE_PAUSE)
+	await _frames(2)
+	var prects := g.ui.hover_rects
+	_check(prects.size() == g.pause_items.size(), "pause menu exposes click rects")
+	var pause_cover := true
+	for i in prects.size():
+		var pc: Vector2 = prects[i].get_center()
+		if not prects[i].has_point(pc):
+			pause_cover = false
+	_check(pause_cover, "pause rects cover their centers")
+	# клик по подсвеченному пункту активирует его
+	g.pause_idx = 0
+	g.ui.hover_idx = 0
+	g._menu_click()
+	_check(g.state == g.STATE_PLAY, "clicking highlighted pause item resumes")
+	g._set_state(g.STATE_PAUSE)
+	await _frames(2)
+
+	# --- повреждённые и отсутствующие сейвы ---
+	g._set_state(g.STATE_PLAY)
+	g.fade_t = 0.0
+	var udir := DirAccess.open("user://")
+	udir.make_dir_recursive("saves")
+	var fw := FileAccess.open("user://saves/slot3.json", FileAccess.WRITE)
+	fw.store_string("{это не json!!!")
+	fw.close()
+	var bad_meta := SaveSystem.read_meta(SaveSystem.SLOTS[2])
+	_check(not bad_meta.exists, "corrupted json reports missing meta")
+	_check(not SaveSystem.load_run(g, SaveSystem.SLOTS[2]), "corrupted json refuses to load")
+	fw = FileAccess.open("user://saves/slot3.json", FileAccess.WRITE)
+	fw.store_string("{\"meta\": {\"day\": 2}}")
+	fw.close()
+	_check(not SaveSystem.load_run(g, SaveSystem.SLOTS[2]), "json without state refuses to load")
+	_check(g.state == g.STATE_PLAY, "failed load keeps play state")
+	var m_missing := SaveSystem.read_meta("no_such_slot")
+	_check(not m_missing.exists, "missing slot reports missing")
+	_check(not SaveSystem.load_run(g, "no_such_slot"), "missing slot refuses to load")
+	# семантический мусор в валидном json: клампы и фильтры
+	fw = FileAccess.open("user://saves/slot3.json", FileAccess.WRITE)
+	fw.store_string(JSON.stringify({
+		"meta": {},
+		"state": {
+			"diff_index": 99, "day": 999, "max_days": 0, "deaths": -5, "play_time": -12.0,
+			"player": {"level": 55, "x": -12345.0, "y": -9999.0},
+			"inv": [0, 3, 99, "бред"],
+			"armed_traps": [{"lv": 31, "x": -50.0, "y": -50.0}],
+		},
+	}))
+	fw.close()
+	_check(SaveSystem.load_run(g, SaveSystem.SLOTS[2]), "garbage-but-valid save loads")
+	_check(g.diff_index >= 0 and g.diff_index < g.diffs.size(), "diff index clamped")
+	_check(g.max_days >= 1, "max days clamped positive")
+	_check(g.day >= 1 and g.day <= g.max_days, "day clamped into range")
+	_check(g.deaths >= 0, "deaths clamped non-negative")
+	_check(g.play_time >= 0.0, "play time clamped non-negative")
+	_check(g.player.level >= 0 and g.player.level < g.world.levels.size(), "player level clamped")
+	var glv2: LevelData = g.world.levels[g.player.level]
+	var pp2: Vector3 = g.player.global_position - glv2.origin
+	_check(pp2.x >= 0.0 and pp2.x <= glv2.w and pp2.z >= 0.0 and pp2.z <= glv2.h, "player position clamped into level")
+	_check(not glv2.solid_at(pp2.x, pp2.z), "player not stuck inside a wall")
+	var inv_ok := g.inv.size() == 1 and g.inv[0] == Items.NOTE
+	_check(inv_ok, "invalid inventory ids filtered out")
+	var trap_total := 0
+	for lvx in g.world.levels:
+		trap_total += lvx.traps.size()
+	_check(trap_total == 0, "garbage trap coords filtered out")
+
 	# Даём дереву освободить отложенные ресурсы и таймеры перед выходом.
 	await _frames(10)
 
@@ -390,6 +599,10 @@ func _press(code: int, down: bool) -> void:
 	Input.parse_input_event(ev)
 
 func _shot(name: String) -> void:
+	if DisplayServer.get_name() == "headless":
+		# Headless: кадры не рендерятся, frame_post_draw не приходит —
+		# скриншоты недоступны в принципе; все проверки не зависят от них.
+		return
 	await RenderingServer.frame_post_draw
 	var img := g.get_viewport().get_texture().get_image()
 	var dir := DirAccess.open("res://")

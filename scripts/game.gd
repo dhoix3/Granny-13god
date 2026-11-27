@@ -12,6 +12,9 @@ const STATE_CAUGHT := 5
 const STATE_WIN := 6
 const STATE_OVER := 7
 const STATE_HELP := 8
+const STATE_SETTINGS := 9
+const STATE_SAVE := 10
+const STATE_LOAD := 11
 
 const WIN_DOOR := 0
 const WIN_CAR := 1
@@ -111,9 +114,17 @@ var seed := 20261119
 var menu_idx := 0
 var diff_idx_menu := 1
 var pause_idx := 0
+var settings_idx := 0
+var save_idx := 0
 var diff_return := 0
-var menu_items := ["НОВАЯ ИГРА", "СЛОЖНОСТЬ", "КАК ИГРАТЬ", "ВЫХОД"]
-var pause_items := ["ПРОДОЛЖИТЬ", "СЛОЖНОСТЬ", "В ГЛАВНОЕ МЕНЮ", "ВЫХОД ИЗ ИГРЫ"]
+var settings_return := 0
+var save_return := 0
+var has_saves := false
+var title_hint := ""
+var title_hint_t := 0.0
+var menu_items := ["ПРОДОЛЖИТЬ", "НОВАЯ ИГРА", "ЗАГРУЗИТЬ ИГРУ", "СЛОЖНОСТЬ", "НАСТРОЙКИ", "КАК ИГРАТЬ", "ВЫХОД"]
+var pause_items := ["ПРОДОЛЖИТЬ", "СОХРАНИТЬ ИГРУ", "ЗАГРУЗИТЬ ИГРУ", "СЛОЖНОСТЬ", "НАСТРОЙКИ", "В ГЛАВНОЕ МЕНЮ", "ВЫХОД ИЗ ИГРЫ"]
+var settings: GameSettings
 
 var throwns: Array[ThrownBottle] = []
 var bloods: Array[Node3D] = []
@@ -129,6 +140,7 @@ var _autotest = null
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	rng.seed = seed
+	settings = GameSettings.load_settings()
 	_make_diffs()
 	diff = diffs[diff_index]
 	_setup_environment()
@@ -142,6 +154,7 @@ func _ready() -> void:
 	player.name = "Player"
 	add_child(player)
 	player.setup(self)
+	player.flashlight.shadow_enabled = settings.flashlight_shadows
 
 	granny = GrannyAI.new()
 	granny.name = "Granny"
@@ -162,10 +175,21 @@ func _ready() -> void:
 	cl.add_child(ui)
 	ui.setup(self)
 
+	settings.apply(get_viewport())
+	_refresh_save_cache()
 	reset_to_title()
 	if OS.get_cmdline_user_args().has("--autotest"):
 		_autotest = load("res://tests/autotest.gd").new()
 		_autotest.run(self)
+
+func _refresh_save_cache() -> void:
+	has_saves = SaveSystem.has_any_save()
+
+func look_scale() -> float:
+	return settings.mouse_sensitivity if settings != null else 1.0
+
+func invert_look() -> bool:
+	return settings.invert_y if settings != null else false
 
 func _make_diffs() -> void:
 	diffs = [
@@ -220,6 +244,10 @@ func _process(dt: float) -> void:
 			_update_caught(dt)
 		STATE_WIN, STATE_OVER:
 			win_t += dt
+	if title_hint_t > 0.0:
+		title_hint_t = maxf(0.0, title_hint_t - dt)
+	if state != STATE_PLAY:
+		_update_menu_hover()
 	for i in range(subs.size() - 1, -1, -1):
 		subs[i].t += dt
 		if subs[i].t > subs[i].dur:
@@ -250,19 +278,27 @@ func _input(event: InputEvent) -> void:
 			_on_key(k)
 	elif event is InputEventMouseButton:
 		var mouse_event := event as InputEventMouseButton
-		if mouse_event.button_index == MOUSE_BUTTON_LEFT and state == STATE_PLAY:
-			if mouse_event.pressed:
-				if Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
-					mouse_e_down = true
+		if mouse_event.button_index == MOUSE_BUTTON_LEFT:
+			if state == STATE_PLAY:
+				if mouse_event.pressed:
+					if Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
+						mouse_e_down = true
+					else:
+						Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 				else:
-					Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
-			else:
-				mouse_e_down = false
+					mouse_e_down = false
+			elif mouse_event.pressed:
+				_menu_click()
 
 func _on_key(k: int) -> void:
 	if k == KEY_F11:
+		# Переключаем настройку детерминированно: чтение win.mode после
+		# присваивания ненадёжно (в headless режим всегда WINDOWED,
+		# на некоторых платформах применяется асинхронно).
+		settings.fullscreen = not settings.fullscreen
 		var win := get_window()
-		win.mode = Window.MODE_WINDOWED if win.mode == Window.MODE_FULLSCREEN else Window.MODE_FULLSCREEN
+		win.mode = Window.MODE_FULLSCREEN if settings.fullscreen else Window.MODE_WINDOWED
+		settings.save_settings()
 		return
 	if k == KEY_F1:
 		debug_on = not debug_on
@@ -278,16 +314,9 @@ func _on_key(k: int) -> void:
 				Audio.play("ui_move", 0.5, 1.0)
 			elif k == KEY_ENTER or k == KEY_KP_ENTER or k == KEY_SPACE:
 				Audio.play("ui_select", 0.6, 1.0)
-				if menu_idx == 0:
-					start_game()
-				elif menu_idx == 1:
-					diff_return = 0
-					diff_idx_menu = diff_index
-					_set_state(STATE_DIFF)
-				elif menu_idx == 2:
-					_set_state(STATE_HELP)
-				else:
-					get_tree().quit()
+				_activate_title_item()
+			elif k == KEY_ESCAPE:
+				get_tree().quit()
 		STATE_DIFF:
 			if k == KEY_UP or k == KEY_W or k == KEY_LEFT or k == KEY_A:
 				diff_idx_menu = (diff_idx_menu + diffs.size() - 1) % diffs.size()
@@ -305,11 +334,17 @@ func _on_key(k: int) -> void:
 		STATE_HELP:
 			if k == KEY_ESCAPE or k == KEY_ENTER or k == KEY_KP_ENTER or k == KEY_SPACE:
 				_set_state(STATE_TITLE)
+		STATE_SETTINGS:
+			_on_key_settings(k)
+		STATE_SAVE, STATE_LOAD:
+			_on_key_saves(k)
 		STATE_INTRO:
 			if k == KEY_ENTER or k == KEY_KP_ENTER or k == KEY_SPACE or k == KEY_ESCAPE:
 				_set_state(STATE_PLAY)
 				fade_t = 1.0
 				push_subtitle("Найди три ключа и открой входную дверь.", 4.0, false)
+				SaveSystem.save_run(self, SaveSystem.AUTO)
+				_refresh_save_cache()
 		STATE_PLAY:
 			if k == KEY_ESCAPE:
 				_set_state(STATE_PAUSE)
@@ -333,8 +368,9 @@ func _on_key(k: int) -> void:
 					player.trap_mash += 0.22
 					Audio.play("step2", 0.5, 1.6)
 		STATE_PAUSE:
-			if k == KEY_ESCAPE:
+			if k == KEY_ESCAPE or k == KEY_BACKSPACE:
 				_set_state(STATE_PLAY)
+				pause_idx = 0
 			elif k == KEY_UP or k == KEY_W:
 				pause_idx = (pause_idx + pause_items.size() - 1) % pause_items.size()
 				Audio.play("ui_move", 0.5, 1.0)
@@ -343,19 +379,240 @@ func _on_key(k: int) -> void:
 				Audio.play("ui_move", 0.5, 1.0)
 			elif k == KEY_ENTER or k == KEY_KP_ENTER or k == KEY_SPACE:
 				Audio.play("ui_select", 0.6, 1.0)
-				if pause_idx == 0:
-					_set_state(STATE_PLAY)
-				elif pause_idx == 1:
-					diff_return = 1
-					diff_idx_menu = diff_index
-					_set_state(STATE_DIFF)
-				elif pause_idx == 2:
-					reset_to_title()
-				else:
-					get_tree().quit()
+				_activate_pause_item()
 		STATE_WIN, STATE_OVER:
 			if k == KEY_ENTER or k == KEY_KP_ENTER or k == KEY_SPACE or k == KEY_ESCAPE:
 				reset_to_title()
+
+func _activate_title_item() -> void:
+	match menu_idx:
+		0:
+			var slot := SaveSystem.latest_slot()
+			if slot == "":
+				title_hint = "Пока нет сохранений. Начни новую игру."
+				title_hint_t = 3.5
+			elif SaveSystem.load_run(self, slot):
+				_refresh_save_cache()
+				push_subtitle("Загружено: день " + str(day) + ".", 3.0, false)
+			else:
+				title_hint = "Не удалось загрузить сохранение."
+				title_hint_t = 3.0
+		1:
+			start_game()
+		2:
+			save_return = 0
+			save_idx = 0
+			_set_state(STATE_LOAD)
+		3:
+			diff_return = 0
+			diff_idx_menu = diff_index
+			_set_state(STATE_DIFF)
+		4:
+			settings_return = 0
+			settings_idx = 0
+			_set_state(STATE_SETTINGS)
+		5:
+			_set_state(STATE_HELP)
+		6:
+			get_tree().quit()
+
+func _activate_pause_item() -> void:
+	match pause_idx:
+		0:
+			_set_state(STATE_PLAY)
+		1:
+			save_return = 1
+			save_idx = 0
+			_set_state(STATE_SAVE)
+		2:
+			save_return = 1
+			save_idx = 0
+			_set_state(STATE_LOAD)
+		3:
+			diff_return = 1
+			diff_idx_menu = diff_index
+			_set_state(STATE_DIFF)
+		4:
+			settings_return = 1
+			settings_idx = 0
+			_set_state(STATE_SETTINGS)
+		5:
+			reset_to_title()
+		6:
+			get_tree().quit()
+
+func _menu_click() -> void:
+	match state:
+		STATE_TITLE:
+			if ui.hover_idx >= 0 and ui.hover_idx < menu_items.size():
+				if menu_idx == ui.hover_idx:
+					Audio.play("ui_select", 0.6, 1.0)
+					_activate_title_item()
+				else:
+					menu_idx = ui.hover_idx
+					Audio.play("ui_move", 0.5, 1.0)
+		STATE_DIFF:
+			var di := ui.hover_diff_index()
+			if di >= 0:
+				diff_idx_menu = di
+				diff_index = di
+				diff = diffs[diff_index]
+				Audio.play("ui_select", 0.6, 1.0)
+				_set_state(STATE_PAUSE if diff_return == 1 else STATE_TITLE)
+		STATE_SETTINGS:
+			_click_setting()
+		STATE_PAUSE:
+			if ui.hover_idx >= 0 and ui.hover_idx < pause_items.size():
+				if pause_idx == ui.hover_idx:
+					Audio.play("ui_select", 0.6, 1.0)
+					_activate_pause_item()
+				else:
+					pause_idx = ui.hover_idx
+					Audio.play("ui_move", 0.5, 1.0)
+		STATE_SAVE, STATE_LOAD:
+			if ui.hover_idx >= 0 and ui.hover_idx < SaveSystem.ALL_SLOTS.size():
+				save_idx = ui.hover_idx
+				Audio.play("ui_select", 0.6, 1.0)
+				_activate_save_slot()
+		STATE_HELP:
+			_set_state(STATE_TITLE)
+		STATE_WIN, STATE_OVER:
+			reset_to_title()
+
+const SETTINGS_ROW_COUNT := 9
+
+func _on_key_settings(k: int) -> void:
+	if k == KEY_UP or k == KEY_W:
+		settings_idx = (settings_idx + SETTINGS_ROW_COUNT - 1) % SETTINGS_ROW_COUNT
+		Audio.play("ui_move", 0.5, 1.0)
+	elif k == KEY_DOWN or k == KEY_S:
+		settings_idx = (settings_idx + 1) % SETTINGS_ROW_COUNT
+		Audio.play("ui_move", 0.5, 1.0)
+	elif k == KEY_LEFT or k == KEY_A:
+		_adjust_setting(settings_idx, -1.0)
+	elif k == KEY_RIGHT or k == KEY_D:
+		_adjust_setting(settings_idx, 1.0)
+	elif k == KEY_ENTER or k == KEY_KP_ENTER or k == KEY_SPACE:
+		_cycle_setting(settings_idx)
+	elif k == KEY_ESCAPE or k == KEY_BACKSPACE:
+		_close_settings()
+
+func _adjust_setting(row: int, dir: float) -> void:
+	var changed := false
+	match row:
+		0:
+			settings.master_volume = clampf(settings.master_volume + dir * 0.05, 0.0, 1.0)
+			changed = true
+		1:
+			settings.music_volume = clampf(settings.music_volume + dir * 0.05, 0.0, 1.0)
+			changed = true
+		2:
+			settings.sfx_volume = clampf(settings.sfx_volume + dir * 0.05, 0.0, 1.0)
+			changed = true
+		3:
+			settings.mouse_sensitivity = clampf(settings.mouse_sensitivity + dir * 0.1, 0.2, 2.5)
+			changed = true
+		4:
+			settings.invert_y = not settings.invert_y
+			changed = true
+		5:
+			settings.fullscreen = not settings.fullscreen
+			changed = true
+		6:
+			settings.flashlight_shadows = not settings.flashlight_shadows
+			changed = true
+		7:
+			settings.msaa = (settings.msaa + (1 if dir >= 0.0 else 2)) % 3
+			changed = true
+		8:
+			return
+	if not changed:
+		return
+	_apply_settings_live(row)
+	Audio.play("ui_move", 0.55, 1.0 if dir >= 0.0 else 0.9)
+
+func _cycle_setting(row: int) -> void:
+	if row == SETTINGS_ROW_COUNT - 1:
+		_close_settings()
+		return
+	_adjust_setting(row, 1.0)
+
+func _click_setting() -> void:
+	var row := ui.hover_idx
+	if row < 0 or row >= SETTINGS_ROW_COUNT:
+		return
+	if row == SETTINGS_ROW_COUNT - 1:
+		Audio.play("ui_select", 0.6, 1.0)
+		_close_settings()
+		return
+	if row <= 3:
+		# слайдер: значение по позиции клика
+		var frac := ui.hover_row_frac
+		match row:
+			0:
+				settings.master_volume = clampf(frac, 0.0, 1.0)
+			1:
+				settings.music_volume = clampf(frac, 0.0, 1.0)
+			2:
+				settings.sfx_volume = clampf(frac, 0.0, 1.0)
+			3:
+				settings.mouse_sensitivity = clampf(0.2 + frac * 2.3, 0.2, 2.5)
+		_apply_settings_live(row)
+		Audio.play("ui_move", 0.55, 1.0)
+	else:
+		_adjust_setting(row, 1.0)
+
+func _apply_settings_live(row: int) -> void:
+	settings.save_settings()
+	if row <= 2:
+		settings.apply_audio()
+	elif row == 5 or row == 7:
+		settings.apply_video(get_viewport())
+	elif row == 6:
+		player.flashlight.shadow_enabled = settings.flashlight_shadows
+
+func _close_settings() -> void:
+	settings.save_settings()
+	_set_state(STATE_PAUSE if settings_return == 1 else STATE_TITLE)
+
+func _on_key_saves(k: int) -> void:
+	var n := SaveSystem.ALL_SLOTS.size()
+	if k == KEY_UP or k == KEY_W:
+		save_idx = (save_idx + n - 1) % n
+		Audio.play("ui_move", 0.5, 1.0)
+	elif k == KEY_DOWN or k == KEY_S:
+		save_idx = (save_idx + 1) % n
+		Audio.play("ui_move", 0.5, 1.0)
+	elif k == KEY_ENTER or k == KEY_KP_ENTER or k == KEY_SPACE:
+		Audio.play("ui_select", 0.6, 1.0)
+		_activate_save_slot()
+	elif k == KEY_ESCAPE or k == KEY_BACKSPACE:
+		_set_state(STATE_PAUSE if save_return == 1 else STATE_TITLE)
+
+func _activate_save_slot() -> void:
+	var slot: String = SaveSystem.ALL_SLOTS[save_idx]
+	if state == STATE_SAVE:
+		if SaveSystem.save_run(self, slot):
+			_refresh_save_cache()
+			Audio.play("unlock", 0.6, 1.1)
+			if save_return == 1:
+				toast_msg("Сохранено: " + SaveSystem.slot_label(slot), 2.6, TK_OK)
+			else:
+				title_hint = "Сохранено: " + SaveSystem.slot_label(slot)
+				title_hint_t = 3.0
+			_set_state(STATE_PAUSE if save_return == 1 else STATE_TITLE)
+		else:
+			toast_msg("Ошибка сохранения.", 2.4, TK_ERR)
+	else:
+		var m := SaveSystem.read_meta(slot)
+		if not m.exists:
+			Audio.play("ui_move", 0.4, 0.6)
+			return
+		if SaveSystem.load_run(self, slot):
+			_refresh_save_cache()
+			push_subtitle("Загружено: день " + str(day) + ".", 3.0, false)
+		else:
+			toast_msg("Не удалось загрузить сохранение.", 2.4, TK_ERR)
 
 func _set_state(s: int) -> void:
 	state = s
@@ -364,6 +621,59 @@ func _set_state(s: int) -> void:
 	else:
 		mouse_e_down = false
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	_update_music_for_state()
+
+func _update_menu_hover() -> void:
+	if ui == null:
+		return
+	var prev_hover := ui.hover_idx
+	ui.update_hover(state)
+	match state:
+		STATE_TITLE:
+			var idx := ui.hover_idx
+			if idx >= 0 and idx < menu_items.size() and idx != menu_idx:
+				menu_idx = idx
+				if prev_hover != idx:
+					Audio.play("ui_move", 0.45, 1.0)
+		STATE_PAUSE:
+			var idx := ui.hover_idx
+			if idx >= 0 and idx < pause_items.size() and idx != pause_idx:
+				pause_idx = idx
+				if prev_hover != idx:
+					Audio.play("ui_move", 0.45, 1.0)
+		STATE_DIFF:
+			var di := ui.hover_diff_index()
+			if di >= 0 and di != diff_idx_menu:
+				diff_idx_menu = di
+				Audio.play("ui_move", 0.45, 1.0)
+		STATE_SETTINGS:
+			var idx := ui.hover_idx
+			if idx >= 0 and idx < SETTINGS_ROW_COUNT and idx != settings_idx:
+				settings_idx = idx
+				Audio.play("ui_move", 0.45, 1.0)
+		STATE_SAVE, STATE_LOAD:
+			var idx := ui.hover_idx
+			if idx >= 0 and idx < SaveSystem.ALL_SLOTS.size() and idx != save_idx:
+				save_idx = idx
+				Audio.play("ui_move", 0.45, 1.0)
+
+func _update_music_for_state() -> void:
+	if Audio == null:
+		return
+	match state:
+		STATE_TITLE, STATE_DIFF, STATE_HELP:
+			Audio.set_music("music_menu")
+			Audio.music_energy = 1.0
+		STATE_SETTINGS, STATE_SAVE, STATE_LOAD:
+			if settings_return == 0 and state == STATE_SETTINGS or save_return == 0 and (state == STATE_SAVE or state == STATE_LOAD):
+				Audio.set_music("music_menu")
+			Audio.music_energy = 1.0
+		STATE_INTRO, STATE_PLAY, STATE_CAUGHT, STATE_WIN, STATE_OVER:
+			Audio.set_music("music_ambient")
+			Audio.music_energy = 1.0
+		STATE_PAUSE:
+			Audio.set_music("music_ambient")
+			Audio.music_energy = 0.45
 
 func can_look() -> bool:
 	return state == STATE_PLAY and not journal and player != null and not player.dead
@@ -376,6 +686,9 @@ func reset_to_title() -> void:
 	subs.clear()
 	throwns.clear()
 	menu_idx = 0
+	title_hint = ""
+	title_hint_t = 0.0
+	_refresh_save_cache()
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	player.place_at(0, 15.5, 27.2, -PI * 0.5 + 0.06)
 	player.pitch = -0.10
@@ -576,6 +889,7 @@ func _update_play(dt: float) -> void:
 	var prox := clampf(1.0 - d / 9.0, 0.0, 1.0)
 	if granny.level != player.level:
 		prox *= 0.15
+	Audio.music_energy = 1.0 + detect_fx * 0.5 + prox * 0.25
 	heart_t -= dt
 	if heart_t <= 0.0 and prox > 0.25:
 		Audio.play("heart", 0.35 + prox * 0.55, 1.0 + prox * 0.25)
@@ -596,7 +910,11 @@ func _update_atmosphere(dt: float) -> void:
 		ambient_t = 14.0 + rng.randf() * 26.0
 		var r := rng.randf()
 		if r < 0.5:
-			Audio.play("creak", 0.22, 0.55 + rng.randf() * 0.4)
+			# скрип из случайной точки рядом с игроком — создаёт объём
+			var ang := rng.randf() * TAU
+			var rad := 3.0 + rng.randf() * 5.0
+			var pl := player_local()
+			Audio.play3d("creak", world.get_root(player.level), Vector3(pl.x + cos(ang) * rad, 1.8, pl.y + sin(ang) * rad), 0.24, 0.55 + rng.randf() * 0.4, 4.0)
 		elif r < 0.7:
 			Audio.play("whisper", 0.25, 0.8)
 		else:
@@ -626,6 +944,8 @@ func _update_caught(dt: float) -> void:
 			_set_state(STATE_PLAY)
 			push_subtitle("День " + str(day) + ". Она снова где-то в доме...", 4.0, false)
 			Audio.play("thunder", 0.5, 1.0)
+			SaveSystem.save_run(self, SaveSystem.AUTO)
+			_refresh_save_cache()
 
 func player_local() -> Vector2:
 	var lv: LevelData = world.levels[player.level]
@@ -1089,7 +1409,7 @@ func update_traps(dt: float) -> void:
 		player.trap_stuck = 2.6
 		player.trap_mash = 0.0
 		player.health = maxf(0.05, player.health - 0.28)
-		Audio.play("snap", 0.9, 1.0)
+		Audio.play3d("snap", world.get_root(player.level), Vector3(pl.x, 0.3, pl.y), 0.95, 1.0, 8.0)
 		Audio.play("scream", 0.25, 1.9)
 		shake = maxf(shake, 1.2)
 		emit_noise(pl.x, pl.y, 13.0, "капкан")
@@ -1116,7 +1436,7 @@ func update_spiders(dt: float) -> void:
 		spider_bite_t = time
 		player.health = maxf(0.05, player.health - 0.22)
 		shake = maxf(shake, 0.55)
-		Audio.play("spider_hiss", 0.55, 0.9 + rng.randf() * 0.25)
+		Audio.play3d("spider_hiss", world.get_root(player.level), Vector3(s.x, 0.3, s.y), 0.6, 0.9 + rng.randf() * 0.25, 6.0)
 		emit_noise(pl.x, pl.y, 5.0, "паук")
 		toast_msg("Паук цапнул за щиколотку! Оно может спуститься.", 2.4, TK_ERR)
 	var _unused := dt
@@ -1143,7 +1463,7 @@ func break_bottle(b: ThrownBottle) -> void:
 	if b.broken:
 		return
 	b.broken = true
-	Audio.play("break", 0.9, 1.0)
+	Audio.play3d("break", world.get_root(b.level), Vector3(b.x, 0.9, b.y), 0.9, 1.0, 9.0)
 	emit_noise(b.x, b.y, 15.0, "стекло")
 	if granny.level == player.level and granny.state != GrannyAI.CHASE:
 		granny.attract(b.x, b.y)
@@ -1239,7 +1559,7 @@ func on_caught() -> void:
 	player.dead = true
 	deaths += 1
 	shake = 1.5
-	Audio.play("scream", 1.0, 0.95)
+	Audio.play3d("scream", world.get_root(player.level), Vector3(granny.x, 1.5, granny.y), 1.0, 0.95, 12.0)
 	Audio.play("snap", 0.6, 0.7)
 	granny.say(self, "ПОПАЛСЯ, СОЛНЫШКО!", 2.0)
 	var pl := player_local()
@@ -1265,7 +1585,11 @@ func win_game(kind: int) -> void:
 	last_win = kind
 	Audio.play("win", 0.9, 1.0)
 	if kind == WIN_CAR:
-		Audio.play("car_start", 0.85, 1.0)
+		var car_lv: LevelData = world.levels[2]
+		for d in car_lv.decos:
+			if d.is_car:
+				Audio.play3d("car_start", world.get_root(2), Vector3(d.x, 0.8, d.y), 0.9, 1.0, 11.0)
+				break
 		world.set_garage_open(true)
 	if kind == WIN_SECRET:
 		Audio.play("win", 1.2, 1.3)

@@ -217,8 +217,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not game.can_look():
 		return
 	if event is InputEventMouseMotion:
-		angle = wrapf(angle + event.relative.x * 0.0026 * mouse_sensitivity, -PI, PI)
-		pitch = clampf(pitch - event.relative.y * 0.0022 * mouse_sensitivity, -1.35, 1.35)
+		# game типизирован как Node — возвращаемые значения Variant,
+		# поэтому тип указываем явно (:= здесь не компилируется)
+		var sens: float = mouse_sensitivity * game.look_scale()
+		var inv: float = -1.0 if game.invert_look() else 1.0
+		angle = wrapf(angle + event.relative.x * 0.0026 * sens, -PI, PI)
+		pitch = clampf(pitch - event.relative.y * 0.0022 * sens * inv, -1.35, 1.35)
 		if hidden:
 			pitch = clampf(pitch, -0.7, 0.7)
 

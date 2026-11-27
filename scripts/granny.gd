@@ -54,6 +54,7 @@ var consecutive_path_fails := 0
 var idle_look := 0.0
 var wander_t := 0.0
 var wander_dir := 0.0
+var hum_t := 6.0
 
 func _ready() -> void:
 	sprite = Sprite3D.new()
@@ -101,6 +102,7 @@ func spawn(plv: LevelData, px: float, py: float, pang: float) -> void:
 	lost_t = 0.0
 	stuck_t = 0.0
 	decision_t = 0.0
+	hum_t = 4.0 + randf() * 4.0
 	if not can_stand(null, x, y):
 		var placed := false
 		for r in range(1, 3):
@@ -238,7 +240,7 @@ func update(dt: float, g: Node) -> void:
 			aggro = true
 			var lines := ["А ВОТ И ТЫ, СОЛНЫШКО!", "СТОЙ, ВНУЧОК!", "Я ТЕБЯ ВИЖУ, ЗАИНЬКА!", "КУДА СОБРАЛСЯ БЕЗ УЖИНА?!"]
 			say(g, lines[randi() % lines.size()], 2.2)
-			Audio.play("scream", 0.85, 1.0, true)
+			Audio.play3d("scream", g.world.get_root(level), Vector3(x, 1.4, y), 0.9, 1.0, 9.0)
 			g.add_shake(0.7)
 	else:
 		notice = maxf(0.0, notice - dt * 0.55)
@@ -351,7 +353,7 @@ func update(dt: float, g: Node) -> void:
 				path.clear()
 				state = PATROL
 				decision_t = 0.5
-				Audio.play("climb", 0.5, 0.85)
+				Audio.play3d("climb", g.world.get_root(nl), Vector3(x, 1.0, y), 0.5, 0.85)
 
 	update_attic_wish(dt, g)
 
@@ -361,8 +363,15 @@ func update(dt: float, g: Node) -> void:
 	if step_acc >= 0.78:
 		step_acc = 0.0
 		if same_level and not g.player.hidden and not g.player.dead:
-			var gv := clampf(1.0 - dist / 12.0, 0.0, 1.0)
-			Audio.play("step", 0.07 + gv * 0.55, 0.60 + randf() * 0.25)
+			Audio.play3d("step", g.world.get_root(level), Vector3(x, 0.6, y), 0.5 + randf() * 0.2, 0.60 + randf() * 0.25, 6.0)
+	# Гул при спокойном состоянии — мягкий ориентир, где бабушка.
+	if state == PATROL or state == SEARCH or state == INVESTIGATE:
+		hum_t -= dt
+		if hum_t <= 0.0:
+			hum_t = 5.5 + randf() * 6.0
+			Audio.play3d("hum", g.world.get_root(level), Vector3(x, 1.4, y), 0.30 + randf() * 0.12, 0.92 + randf() * 0.14, 5.0)
+	else:
+		hum_t = minf(hum_t, 3.0)
 
 	g.noise_seen = g.time
 	bob += dt * (9.0 if state == CHASE else 4.4) * (0.4 + 0.6 * (1.0 if not path.is_empty() and path_idx < path.size() else 0.15))
@@ -417,7 +426,7 @@ func update_attic_wish(dt: float, g: Node) -> void:
 			path.clear()
 			hatch_x = 15.5 if level == 0 else 4.5
 			hatch_y = 3.5 if level == 0 else 20.5
-			Audio.play("climb", 0.55, 0.9)
+			Audio.play3d("climb", g.world.get_root(level), Vector3(hatch_x, 1.0, hatch_y), 0.55, 0.9)
 	else:
 		level_switch_t = 4.0
 		attic_wish = 0
@@ -537,7 +546,7 @@ func follow_path(dt: float, g: Node, speed: float) -> void:
 func open_door(g: Node, d: LevelData.Door, tx: float, ty: float) -> void:
 	d.open = true
 	d.open_t = 0.001
-	Audio.play("creak", 0.6, 0.9 + randf() * 0.25)
+	Audio.play3d("creak", g.world.get_root(level), Vector3(tx, 1.0, ty), 0.6, 0.9 + randf() * 0.25)
 	g.emit_noise(tx, ty, 6.0, "дверь")
 
 func door_in_front(g: Node, reach: float) -> LevelData.Door:

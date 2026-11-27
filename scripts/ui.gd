@@ -8,6 +8,15 @@ extends Control
 var game: GrannyGame
 var face_tex: Texture2D
 
+# Ховер и прямоугольники кликов для меню-экранов.
+var hover_idx := -1
+var hover_row_frac := 0.5
+var hover_rects: Array[Rect2] = []
+var slider_rects: Array[Rect2] = []
+var diff_rects: Array[Rect2] = []
+var _saves_cache: Array[SaveSystem.SlotMeta] = []
+var _last_ui_state := -1
+
 const BONE := Color(0.90, 0.87, 0.80)
 const DIM := Color(0.62, 0.60, 0.55)
 const AMBER := Color(0.86, 0.68, 0.30)
@@ -22,11 +31,55 @@ func setup(g: GrannyGame) -> void:
 	get_viewport().size_changed.connect(queue_redraw)
 	face_tex = load("res://assets/granny_face.png")
 
+func update_hover(_state: int) -> void:
+	if game != null and game.state != _last_ui_state:
+		_last_ui_state = game.state
+		_refresh_saves_cache()
+		hover_idx = -1
+		hover_row_frac = 0.5
+		return  # ждём перерисовку нового экрана — старые прямоугольники невалидны
+	hover_idx = -1
+	var mp := get_global_mouse_position()
+	for i in hover_rects.size():
+		if hover_rects[i].has_point(mp):
+			hover_idx = i
+			break
+	if slider_rects.size() > 0 and hover_idx >= 0 and hover_idx < slider_rects.size():
+		var r := slider_rects[hover_idx]
+		if r.size.x > 0.0:
+			hover_row_frac = clampf((mp.x - r.position.x) / r.size.x, 0.0, 1.0)
+		else:
+			hover_row_frac = 0.5
+	else:
+		hover_row_frac = 0.5
+
+func hover_diff_index() -> int:
+	var mp := get_global_mouse_position()
+	for i in diff_rects.size():
+		if diff_rects[i].has_point(mp):
+			return i
+	return -1
+
+func _refresh_saves_cache() -> void:
+	_saves_cache.clear()
+	for m in SaveSystem.read_all_metas():
+		_saves_cache.append(m)
+
+func _saves_meta(i: int) -> SaveSystem.SlotMeta:
+	if i >= 0 and i < _saves_cache.size():
+		return _saves_cache[i]
+	var m := SaveSystem.SlotMeta.new()
+	return m
+
 func _draw() -> void:
 	if game == null:
 		return
 	var W := size.x
 	var H := size.y
+	if game.state != _last_ui_state:
+		_last_ui_state = game.state
+		_refresh_saves_cache()
+		hover_idx = -1
 	match game.state:
 		GrannyGame.STATE_TITLE:
 			_draw_title(W, H)
@@ -34,6 +87,10 @@ func _draw() -> void:
 			_draw_diff(W, H)
 		GrannyGame.STATE_HELP:
 			_draw_help(W, H)
+		GrannyGame.STATE_SETTINGS:
+			_draw_settings(W, H)
+		GrannyGame.STATE_SAVE, GrannyGame.STATE_LOAD:
+			_draw_saves(W, H)
 		GrannyGame.STATE_INTRO:
 			_draw_intro(W, H)
 		GrannyGame.STATE_PLAY:
@@ -115,6 +172,8 @@ func _draw_debug(W: float, H: float) -> void:
 # ------------------------------------------------------------------ title
 
 func _draw_title(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
 	draw_rect(Rect2(0, 0, W, H), Color(0.004, 0.004, 0.008, 0.52))
 	for i in 7:
 		var t := game.time * 0.05 + i * 1.7
@@ -127,24 +186,36 @@ func _draw_title(W: float, H: float) -> void:
 	_text(96, 220, "ПОБЕГ ОТ БАБУШКИ", 27, Color(0.76, 0.71, 0.63, 0.92))
 	draw_line(Vector2(96, 250), Vector2(524, 250), Color(0.74, 0.16, 0.13, 0.55), 2.0)
 	_text(98, 274, "пародия на Granny · 4 этажа · 5 сложностей", 14, Color(0.62, 0.59, 0.53, 0.8))
-	var my := 342.0
+	var my := 296.0
 	for i in game.menu_items.size():
 		var sel := i == game.menu_idx
+		var inactive := (i == 0 or i == 2) and not game.has_saves
+		var item_col := Color(0.96, 0.93, 0.87) if sel else (Color(0.40, 0.38, 0.35) if inactive else Color(0.68, 0.65, 0.59))
+		var rect := Rect2(82, my - 30, 380, 46)
+		hover_rects.append(rect)
 		if sel:
-			_panel(Rect2(82, my - 30, 380, 46), Color(0.42, 0.10, 0.09, 0.34), Color(0.74, 0.16, 0.13, 0.8), 2.0)
+			_panel(rect, Color(0.42, 0.10, 0.09, 0.34), Color(0.74, 0.16, 0.13, 0.8), 2.0)
 			_text(92, my, "►", 26, BLOOD)
-		_text(122, my, game.menu_items[i], 27 if sel else 23, Color(0.96, 0.93, 0.87) if sel else Color(0.68, 0.65, 0.59))
-		my += 62.0
-	_panel(Rect2(92, 610, 430, 54), Color(0.08, 0.08, 0.10, 0.65), Color(0.55, 0.50, 0.42, 0.35), 1.0)
-	_text(106, 630, "СЛОЖНОСТЬ:", 12, DIM)
-	_text(230, 636, game.diffs[game.diff_index].name, 20, AMBER)
-	_ctext(W * 0.5 + 110, H - 40, "↑ ↓ — выбор    Enter — подтвердить    F11 — полный экран", 13, Color(0.58, 0.56, 0.50, 0.8))
+		elif hover_idx == i and not inactive:
+			_panel(rect, Color(0.42, 0.10, 0.09, 0.20), Color(0.74, 0.16, 0.13, 0.35), 1.4)
+		_text(122, my, game.menu_items[i], 25 if sel else 22, item_col)
+		my += 50.0
+	_panel(Rect2(92, 620, 430, 54), Color(0.08, 0.08, 0.10, 0.65), Color(0.55, 0.50, 0.42, 0.35), 1.0)
+	_text(106, 640, "СЛОЖНОСТЬ:", 12, DIM)
+	_text(230, 646, game.diffs[game.diff_index].name, 20, AMBER)
+	if game.title_hint_t > 0.0 and game.title_hint != "":
+		var hint_a := clampf(game.title_hint_t * 2.0, 0.0, 1.0)
+		_ctext(W * 0.5 + 110, 585, game.title_hint, 15, Color(0.90, 0.79, 0.48, hint_a))
+	_ctext(W * 0.5 + 110, H - 40, "↑ ↓ — выбор    Enter — подтвердить    мышь — тоже работает", 13, Color(0.58, 0.56, 0.50, 0.8))
 	# лёгкая красная рамка-виньетка
 	draw_rect(Rect2(0, 0, W, H), Color(0.20, 0.01, 0.01, 0.05), false, 24.0)
 
 # ------------------------------------------------------------------ difficulty
 
 func _draw_diff(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
+	diff_rects.clear()
 	draw_rect(Rect2(0, 0, W, H), Color(0.012, 0.012, 0.018, 0.98))
 	_shadow_ctext(W * 0.5, 66, "ВЫБЕРИ СЛОЖНОСТЬ", 34, Color(0.93, 0.90, 0.84), 3.0)
 	_ctext(W * 0.5, 108, "чем сложнее — тем быстрее бабушка и тем меньше у тебя дней", 14, DIM)
@@ -159,6 +230,7 @@ func _draw_diff(W: float, H: float) -> void:
 		var x := x0 + i * (cw + gap)
 		var y := 150.0
 		var h := 438.0
+		diff_rects.append(Rect2(x, y, cw, h))
 		var sel := i == game.diff_idx_menu
 		var cur := i == game.diff_index
 		_panel(Rect2(x, y, cw, h), Color(0.09, 0.05, 0.06, 0.9) if sel else Color(0.055, 0.055, 0.07, 0.9), BLOOD if sel else Color(0.35, 0.33, 0.30, 0.55), 3.0 if sel else 1.4)
@@ -179,7 +251,7 @@ func _draw_diff(W: float, H: float) -> void:
 		draw_multiline_string(_f(), Vector2(x + 20, by), d.desc, HORIZONTAL_ALIGNMENT_LEFT, cw - 40, 12, -1, Color(0.68, 0.64, 0.58))
 		if sel:
 			draw_rect(Rect2(x - 4, y - 4, cw + 8, h + 8), Color(0.74, 0.16, 0.13, 0.9), false, 2.0)
-	_ctext(W * 0.5, H - 42, "← → выбрать      Enter — играть      Esc — назад", 14, Color(0.66, 0.62, 0.56))
+	_ctext(W * 0.5, H - 42, "← → / мышь — выбрать      Enter — играть      Esc — назад", 14, Color(0.66, 0.62, 0.56))
 
 func _diff_bar(x: float, y: float, w: float, label: String, v: float, col: Color) -> void:
 	_text(x, y, label, 10, Color(0.66, 0.62, 0.56))
@@ -191,6 +263,9 @@ func _diff_bar(x: float, y: float, w: float, label: String, v: float, col: Color
 # ------------------------------------------------------------------ help
 
 func _draw_help(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
+	diff_rects.clear()
 	draw_rect(Rect2(0, 0, W, H), Color(0.008, 0.008, 0.013, 0.98))
 	_shadow_ctext(W * 0.5, 64, "КАК ИГРАТЬ", 36, BONE, 3.0)
 	var keys := [
@@ -222,6 +297,8 @@ func _draw_help(W: float, H: float) -> void:
 # ------------------------------------------------------------------ intro
 
 func _draw_intro(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
 	draw_rect(Rect2(0, 0, W, H), Color(0.006, 0.006, 0.010, 0.98))
 	for i in 7:
 		var t := game.time * 0.04 + i * 1.9
@@ -430,16 +507,123 @@ func _draw_journal(W: float, H: float) -> void:
 # ------------------------------------------------------------------ pause
 
 func _draw_pause(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
 	draw_rect(Rect2(0, 0, W, H), Color(0.008, 0.008, 0.013, 0.92))
-	_shadow_ctext(W * 0.5, 170, "ПАУЗА", 40, BONE, 3.0)
-	var y := 292.0
+	_shadow_ctext(W * 0.5, 150, "ПАУЗА", 40, BONE, 3.0)
+	var y := 228.0
 	for i in game.pause_items.size():
 		var sel := i == game.pause_idx
+		var rect := Rect2(W * 0.5 - 240, y - 34, 480, 50)
+		hover_rects.append(rect)
 		if sel:
-			_panel(Rect2(W * 0.5 - 240, y - 34, 480, 50), Color(0.42, 0.10, 0.09, 0.42), BLOOD, 2.0)
-		_ctext(W * 0.5, y, game.pause_items[i], 27 if sel else 22, BONE if sel else Color(0.65, 0.62, 0.57))
-		y += 70.0
+			_panel(rect, Color(0.42, 0.10, 0.09, 0.42), BLOOD, 2.0)
+		elif hover_idx == i:
+			_panel(rect, Color(0.42, 0.10, 0.09, 0.20), Color(0.74, 0.16, 0.13, 0.35), 1.4)
+		_ctext(W * 0.5, y, game.pause_items[i], 25 if sel else 21, BONE if sel else Color(0.65, 0.62, 0.57))
+		y += 58.0
 	_ctext(W * 0.5, H - 80, "День " + str(game.day) + " из " + str(game.max_days) + "   ·   замки: " + str(game.count_locks()) + "/3", 13, DIM)
+
+# ------------------------------------------------------------------ settings
+
+func _settings_rows() -> Array:
+	var s := game.settings
+	var pct := func(v: float) -> String: return str(int(round(v * 100.0))) + "%"
+	return [
+		["ГРОМКОСТЬ ОБЩАЯ", pct.call(s.master_volume), true],
+		["ГРОМКОСТЬ МУЗЫКИ", pct.call(s.music_volume), true],
+		["ГРОМКОСТЬ ЗВУКОВ", pct.call(s.sfx_volume), true],
+		["ЧУВСТВИТЕЛЬНОСТЬ МЫШИ", pct.call(s.mouse_sensitivity), true],
+		["ИНВЕРСИЯ ОСИ Y", "ВКЛ" if s.invert_y else "ВЫКЛ", false],
+		["ПОЛНЫЙ ЭКРАН", "ВКЛ" if s.fullscreen else "ВЫКЛ", false],
+		["ТЕНИ ФОНАРИКА", "ВКЛ" if s.flashlight_shadows else "ВЫКЛ", false],
+		["СГЛАЖИВАНИЕ", s.msaa_label(), false],
+		["← НАЗАД", "", false],
+	]
+
+func _draw_settings(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
+	draw_rect(Rect2(0, 0, W, H), Color(0.008, 0.008, 0.013, 0.98))
+	_shadow_ctext(W * 0.5, 64, "НАСТРОЙКИ", 34, BONE, 3.0)
+	_ctext(W * 0.5, 100, "стрелки ← → меняют значение    Esc — выйти", 14, DIM)
+	var rows := _settings_rows()
+	var pw := minf(760.0, W - 80.0)
+	var px := W * 0.5 - pw * 0.5
+	var row_h := 52.0
+	var y0 := 132.0
+	var y := y0
+	for i in rows.size():
+		var r: Array = rows[i]
+		var sel := i == game.settings_idx
+		var rect := Rect2(px, y, pw, row_h)
+		hover_rects.append(rect)
+		if sel:
+			_panel(rect, Color(0.42, 0.10, 0.09, 0.30), Color(0.74, 0.16, 0.13, 0.75), 1.6)
+		elif hover_idx == i:
+			_panel(rect, Color(0.42, 0.10, 0.09, 0.16), Color(0.74, 0.16, 0.13, 0.3), 1.2)
+		var label: String = r[0]
+		var val: String = r[1]
+		var is_slider: bool = r[2]
+		var txt_col := Color(0.92, 0.88, 0.80) if sel else Color(0.72, 0.69, 0.63)
+		_text(px + 24, y + 33, label, 18, txt_col)
+		if is_slider:
+			var bar := Rect2(px + pw - 320, y + 21, 230, 12)
+			slider_rects.append(bar)
+			var frac := 0.5
+			match i:
+				0: frac = game.settings.master_volume
+				1: frac = game.settings.music_volume
+				2: frac = game.settings.sfx_volume
+				3: frac = (game.settings.mouse_sensitivity - 0.2) / 2.3
+			_bar(bar.position.x, bar.position.y, bar.size.x, bar.size.y, frac, AMBER)
+			_text(bar.end.x + 14, y + 33, val, 15, AMBER)
+		elif val != "":
+			var tw := _tw(val, 16)
+			_panel(Rect2(px + pw - 130 - tw * 0.5 - 14, y + 12, tw + 28, 26), Color(0.05, 0.05, 0.08, 0.8), Color(0.55, 0.50, 0.42, 0.4), 1.0)
+			_ctext(px + pw - 130, y + 33, val, 16, BONE if val == "ВКЛ" else DIM)
+		y += row_h
+	_ctext(W * 0.5, y + 34, "мышь: клик по переключателю · клик по полосе ставит значение", 13, Color(0.58, 0.56, 0.50, 0.8))
+
+# ------------------------------------------------------------------ save/load
+
+func _draw_saves(W: float, H: float) -> void:
+	hover_rects.clear()
+	slider_rects.clear()
+	draw_rect(Rect2(0, 0, W, H), Color(0.008, 0.008, 0.013, 0.96))
+	var is_save := game.state == GrannyGame.STATE_SAVE
+	_shadow_ctext(W * 0.5, 70, "СОХРАНИТЬ ИГРУ" if is_save else "ЗАГРУЗИТЬ ИГРУ", 34, BONE, 3.0)
+	_ctext(W * 0.5, 106, "выбери слот" if is_save else "загрузка заменит текущий день", 14, DIM)
+	var pw := minf(680.0, W - 80.0)
+	var px := W * 0.5 - pw * 0.5
+	var card_h := 96.0
+	var y := 136.0
+	for i in SaveSystem.ALL_SLOTS.size():
+		var m := _saves_meta(i)
+		var sel := i == game.save_idx
+		var rect := Rect2(px, y, pw, card_h)
+		hover_rects.append(rect)
+		var border := Color(0.74, 0.16, 0.13, 0.85) if sel else Color(0.45, 0.42, 0.38, 0.5)
+		var fill := Color(0.09, 0.05, 0.06, 0.92) if sel else Color(0.055, 0.055, 0.07, 0.92)
+		if not m.exists and not is_save:
+			fill = Color(0.04, 0.04, 0.05, 0.92)
+		_panel(rect, fill, border, 2.4 if sel else 1.4)
+		var name_col := BONE if m.exists else DIM
+		_text(px + 20, y + 34, SaveSystem.slot_label(SaveSystem.ALL_SLOTS[i]), 18, name_col)
+		if m.exists:
+			var played := str(int(m.play_time) / 60) + ":" + str(int(m.play_time) % 60).pad_zeros(2)
+			var line := "%s · день %d/%d · замки %d/3 · время %s · %s" % [
+				m.diff_name, m.day, m.max_days, m.locks, played, _fmt_saved(m.saved_unix),
+			]
+			_text(px + 20, y + 62, line, 13, Color(0.72, 0.68, 0.60))
+		else:
+			_text(px + 20, y + 62, "— пусто —", 13, Color(0.42, 0.40, 0.37))
+		y += card_h + 14.0
+	_ctext(W * 0.5, y + 26, "Enter — " + ("записать" if is_save else "загрузить") + "    Esc — назад", 14, DIM)
+
+func _fmt_saved(unix: int) -> String:
+	var dt := Time.get_datetime_dict_from_unix_time(unix)
+	return "%02d.%02d %02d:%02d" % [dt.day, dt.month, dt.hour, dt.minute]
 
 # ------------------------------------------------------------------ caught
 

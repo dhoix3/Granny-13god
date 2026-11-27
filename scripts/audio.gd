@@ -2,6 +2,7 @@ extends Node
 
 # Procedural audio. The original game synthesised every sound at runtime,
 # so this port does the same: no external audio files are required.
+# Плюс: шины Master/Music/SFX, музыкальные петли и 3D-позиционирование.
 
 var streams: Dictionary = {}
 var enabled := true
@@ -11,15 +12,47 @@ var _next := 0
 var _rate := 22050
 var _rng := RandomNumberGenerator.new()
 
+var _buses_ready := false
+var music_player: AudioStreamPlayer
+var music_track := ""
+var music_fade := 1.0
+var music_target_fade := 1.0
+var music_energy := 1.0
+var _pending_track := ""
+var _pending_t := 0.0
+
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_rng.seed = 1337
+	_ensure_buses()
 	for i in 24:
 		var p := AudioStreamPlayer.new()
-		p.bus = "Master"
+		p.bus = "SFX"
 		add_child(p)
 		_players.append(p)
+	music_player = AudioStreamPlayer.new()
+	music_player.bus = "Music"
+	add_child(music_player)
 	_build_all()
+
+func set_bus_volume(bus_name: String, v: float) -> void:
+	var idx := AudioServer.get_bus_index(bus_name)
+	if idx >= 0:
+		AudioServer.set_bus_volume_db(idx, linear_to_db(maxf(v, 0.0001)))
+		AudioServer.set_bus_mute(idx, v <= 0.001)
+
+func _ensure_buses() -> void:
+	if _buses_ready:
+		return
+	for bus_name in ["Music", "SFX"]:
+		if AudioServer.get_bus_index(bus_name) == -1:
+			AudioServer.add_bus()
+			# У новой шины ещё нет имени — get_bus_index(name) вернёт -1.
+			# add_bus() добавляет в конец, индекс = bus_count - 1.
+			var idx := AudioServer.bus_count - 1
+			AudioServer.set_bus_name(idx, bus_name)
+			AudioServer.set_bus_send(idx, "Master")
+	_buses_ready = true
 
 func play(sound: String, volume: float = 1.0, pitch: float = 1.0, _reverb: bool = false) -> void:
 	if not enabled:
@@ -33,6 +66,62 @@ func play(sound: String, volume: float = 1.0, pitch: float = 1.0, _reverb: bool 
 	p.volume_db = linear_to_db(clampf(volume, 0.001, 4.0))
 	p.pitch_scale = clampf(pitch, 0.2, 4.0)
 	p.play()
+
+# Мировой звук в точке уровня. root — корень уровня (WorldBuilder.get_root),
+# local_pos — координаты внутри уровня. Плеер освобождается сам.
+func play3d(sound: String, root: Node3D, local_pos: Vector3, volume: float = 1.0, pitch: float = 1.0, unit_size: float = 7.0, max_dist: float = 0.0) -> void:
+	if not enabled or root == null or not root.is_inside_tree():
+		return
+	var s: AudioStream = streams.get(sound)
+	if s == null:
+		return
+	var p := AudioStreamPlayer3D.new()
+	p.bus = "SFX"
+	p.stream = s
+	p.volume_db = linear_to_db(clampf(volume, 0.001, 4.0))
+	p.pitch_scale = clampf(pitch, 0.2, 4.0)
+	p.unit_size = unit_size
+	p.max_distance = max_dist
+	p.max_db = 6.0
+	p.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
+	root.add_child(p)
+	p.position = local_pos
+	p.play()
+	p.finished.connect(p.queue_free)
+
+func _process(dt: float) -> void:
+	if music_player == null:
+		return
+	if _pending_track != "":
+		_pending_t -= dt
+		music_fade = maxf(0.0, music_fade - dt * 2.0)
+		if _pending_t <= 0.0 or music_fade <= 0.0:
+			if _pending_track != music_track:
+				music_track = _pending_track
+				var s: AudioStream = streams.get(music_track)
+				music_player.stream = s
+				if s != null:
+					music_player.play()
+				else:
+					music_player.stop()
+				_pending_track = ""
+			music_fade = minf(1.0, music_fade + dt * 0.8)
+			music_target_fade = 1.0
+	else:
+		music_fade = move_toward(music_fade, music_target_fade, dt * 0.8)
+	if music_player.stream != null:
+		music_player.volume_db = linear_to_db(clampf(0.55 * music_energy * music_fade, 0.0001, 4.0))
+
+# Переключить музыкальную петлю с мягким переходом.
+func set_music(track: String) -> void:
+	if track == music_track:
+		_pending_track = ""
+		music_target_fade = 1.0
+		return
+	if music_track == "":
+		music_fade = 0.0  # старт из тишины — плавное появление
+	_pending_track = track
+	_pending_t = 0.8 if music_track != "" else 0.0
 
 func stop_all() -> void:
 	for p in _players:
@@ -67,6 +156,78 @@ func _build_all() -> void:
 	streams["spider_hiss"] = _make_spider()
 	streams["ui_move"] = _make_ui(false)
 	streams["ui_select"] = _make_ui(true)
+	streams["hum"] = _make_hum()
+	streams["music_menu"] = _make_music_menu()
+	streams["music_ambient"] = _make_music_ambient()
+
+func _loop_wav(buf: PackedFloat32Array) -> AudioStreamWAV:
+	# бесшовная петля: перекрёстный раствор последних 0.5 с в начало
+	var n := buf.size()
+	var m := int(0.5 * _rate)
+	if n > m * 2:
+		for i in m:
+			var k := float(i) / float(m)
+			buf[i] = buf[i] * k + buf[n - m + i] * (1.0 - k)
+		buf.resize(n - m)
+	var w := _wav(buf)
+	w.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	w.loop_begin = 0
+	w.loop_end = buf.size()
+	return w
+
+# Мелодичный гул Гренни — слышен при её патруле, выдаёт позицию.
+func _make_hum() -> AudioStreamWAV:
+	var b := _blank(2.6)
+	var notes := [[0.0, 0.5, 220.0], [0.5, 0.4, 233.0], [0.9, 0.7, 196.0], [1.6, 0.45, 174.6], [2.05, 0.5, 220.0]]
+	for n in notes:
+		_add_tone(b, float(n[0]), float(n[1]), float(n[2]), float(n[2]) * 0.98, 0.16, 0, 1.6, 0.03, 5.5)
+		_add_tone(b, float(n[0]), float(n[1]), float(n[2]) * 0.5, float(n[2]) * 0.49, 0.05, 0, 1.8)
+	_add_noise(b, 0.0, 2.4, 0.012, 1.5, 0.92)
+	return _wav(b)
+
+# Тема главного меню: низкий дрон + редкие «колокольчики» в ля-миноре.
+func _make_music_menu() -> AudioStreamWAV:
+	var b := _blank(24.0)
+	_add_tone(b, 0.0, 24.0, 55.0, 55.0, 0.10, 0, 0.15)
+	_add_tone(b, 0.0, 24.0, 110.0, 109.5, 0.05, 0, 0.15)
+	_add_noise(b, 0.0, 24.0, 0.014, 0.2, 0.985)
+	var seq := [440.0, 523.25, 392.0, 329.63, 440.0, 659.25, 523.25, 392.0, 329.63, 293.66, 329.63, 440.0]
+	var t := 1.0
+	for i in seq.size():
+		var f: float = seq[i]
+		_add_tone(b, t, 2.6, f, f, 0.045, 0, 2.6)
+		_add_tone(b, t + 0.02, 2.2, f * 2.0, f * 2.0, 0.016, 0, 3.4)
+		t += 1.8 + _rng.randf() * 0.4
+	# мягкое эхо
+	var echo := _blank(24.0)
+	for i in b.size():
+		if i >= 3300:
+			echo[i] += b[i - 3300] * 0.35
+		if i >= 6600:
+			echo[i] += b[i - 6600] * 0.16
+	for i in b.size():
+		b[i] += echo[i]
+	return _loop_wav(b)
+
+# Эмбиент дома: дождь + ветер + низкий гул. Тихий фон игрового процесса.
+func _make_music_ambient() -> AudioStreamWAV:
+	var b := _blank(32.0)
+	# низкий дрон
+	_add_tone(b, 0.0, 32.0, 46.0, 46.0, 0.16, 0, 0.1)
+	_add_tone(b, 0.0, 32.0, 92.0, 91.5, 0.05, 0, 0.12)
+	# шум дождя — плотный сглаженный белый шум
+	_add_noise(b, 0.0, 32.0, 0.055, 0.25, 0.86)
+	# порывы ветра
+	var wind_t := 3.0
+	while wind_t < 30.0:
+		var dur := 2.5 + _rng.randf() * 3.0
+		_add_noise(b, wind_t, dur, 0.045 + _rng.randf() * 0.03, 1.0, 0.97)
+		wind_t += dur + 2.0 + _rng.randf() * 4.0
+	# редкие дальние раскаты
+	_add_noise(b, 9.5, 2.2, 0.03, 2.2, 0.93)
+	_add_tone(b, 9.5, 2.0, 50.0, 30.0, 0.05, 0, 1.5)
+	_add_noise(b, 23.0, 2.5, 0.035, 2.4, 0.92)
+	return _loop_wav(b)
 
 func _blank(dur: float) -> PackedFloat32Array:
 	var n := int(dur * _rate)
