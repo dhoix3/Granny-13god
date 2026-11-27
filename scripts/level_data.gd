@@ -8,12 +8,6 @@ const PANEL := 2
 const BRICK := 3
 const DOOR := 4
 const FRONT := 5
-const WARDROBE := 6
-const CABINET := 7
-const SHELF := 8
-const FRIDGE := 9
-const STOVE := 10
-const CRATE := 11
 const WINDOW := 12
 const ATTIC := 13
 const ATTICWOOD := 14
@@ -21,15 +15,14 @@ const PORTRAIT := 15
 const TILEW := 16
 const TOWELS := 17
 const CAGE := 18
-const ATTICUP := 19
-const TABLEW := 20
 const RUG := 21
 const HOLE := 22
 const MIRROR := 23
-const BOOKS := 24
 const PLASTER := 25
-const CAR := 26
 const GARAGE_DOOR := 27
+const BEAM := 28
+
+const TILE_COUNT := 29
 
 const WALL_H := 2.60
 const EYE_H := 1.55
@@ -39,7 +32,7 @@ static var SOLID: Array[bool] = _make_solid()
 
 static func _make_solid() -> Array[bool]:
 	var a: Array[bool] = []
-	a.resize(32)
+	a.resize(TILE_COUNT)
 	a.fill(true)
 	a[FLOOR] = false
 	a[RUG] = false
@@ -83,6 +76,8 @@ class Deco:
 	var hide: HideSpot = null
 	var is_car := false
 	var is_cradle := false
+	var tile_x := 0
+	var tile_y := 0
 	var node: Node3D = null
 
 class Trap:
@@ -104,7 +99,10 @@ var decos: Array[Deco] = []
 var traps: Array[Trap] = []
 var webs: Array[Rect2] = []
 var lamps: Array[Vector3] = []
+var lamp_rooms: Array[int] = []
 var room_names: Array[String] = []
+var hatches: Array[Dictionary] = []
+var spiders: Array[Vector2] = []
 var spawn_x := 1.5
 var spawn_y := 1.5
 var spawn_a := 0.0

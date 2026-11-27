@@ -1,8 +1,8 @@
 class_name GameSettings
 extends RefCounted
 
-# Настройки игры: громкость, мышь, видео. Хранятся в user://settings.cfg,
-# применяются при старте игры и при изменении из экрана настроек.
+# Настройки игры: громкость, взгляд, видео (профили качества), тач.
+# Хранятся в user://settings.cfg, применяются при старте и при изменении.
 
 const PATH := "user://settings.cfg"
 
@@ -18,20 +18,36 @@ var invert_y := false
 var fullscreen := false
 var flashlight_shadows := true
 var msaa := MSAA_2X
+# Профиль качества: 0 Низкий / 1 Средний / 2 Высокий (Mats.QUALITY_LABELS).
+# На Android дефолт — Средний (без конфига), на ПК — Высокий.
+var quality := 2
+# Сенсорное управление: масштаб кнопок/джойстика и признак платформы.
+var touch_scale := 1.0
+var is_touch := false
 
 static func load_settings() -> GameSettings:
-	var s := GameSettings.new()
+	var s := GameSettings.is_touch_platform()
 	var cfg := ConfigFile.new()
-	if cfg.load(PATH) != OK:
-		return s
-	s.master_volume = clampf(float(cfg.get_value("audio", "master", s.master_volume)), 0.0, 1.0)
-	s.music_volume = clampf(float(cfg.get_value("audio", "music", s.music_volume)), 0.0, 1.0)
-	s.sfx_volume = clampf(float(cfg.get_value("audio", "sfx", s.sfx_volume)), 0.0, 1.0)
-	s.mouse_sensitivity = clampf(float(cfg.get_value("input", "mouse_sensitivity", s.mouse_sensitivity)), 0.2, 2.5)
-	s.invert_y = bool(cfg.get_value("input", "invert_y", s.invert_y))
-	s.fullscreen = bool(cfg.get_value("video", "fullscreen", s.fullscreen))
-	s.flashlight_shadows = bool(cfg.get_value("video", "flashlight_shadows", s.flashlight_shadows))
-	s.msaa = clampi(int(cfg.get_value("video", "msaa", s.msaa)), MSAA_OFF, MSAA_4X)
+	if cfg.load(PATH) == OK:
+		s.master_volume = clampf(float(cfg.get_value("audio", "master", s.master_volume)), 0.0, 1.0)
+		s.music_volume = clampf(float(cfg.get_value("audio", "music", s.music_volume)), 0.0, 1.0)
+		s.sfx_volume = clampf(float(cfg.get_value("audio", "sfx", s.sfx_volume)), 0.0, 1.0)
+		s.mouse_sensitivity = clampf(float(cfg.get_value("input", "mouse_sensitivity", s.mouse_sensitivity)), 0.2, 2.5)
+		s.invert_y = bool(cfg.get_value("input", "invert_y", s.invert_y))
+		s.fullscreen = bool(cfg.get_value("video", "fullscreen", s.fullscreen))
+		s.flashlight_shadows = bool(cfg.get_value("video", "flashlight_shadows", s.flashlight_shadows))
+		s.msaa = clampi(int(cfg.get_value("video", "msaa", s.msaa)), MSAA_OFF, MSAA_4X)
+		s.quality = clampi(int(cfg.get_value("video", "quality", s.quality)), 0, 2)
+		s.touch_scale = clampf(float(cfg.get_value("touch", "scale", s.touch_scale)), 0.75, 1.8)
+	return s
+
+static func is_touch_platform() -> GameSettings:
+	var s := GameSettings.new()
+	s.is_touch = OS.has_feature("android") or OS.has_feature("ios") or DisplayServer.is_touchscreen_available()
+	if s.is_touch:
+		s.quality = 1
+		s.msaa = MSAA_OFF
+		s.fullscreen = true
 	return s
 
 func save_settings() -> void:
@@ -44,6 +60,8 @@ func save_settings() -> void:
 	cfg.set_value("video", "fullscreen", fullscreen)
 	cfg.set_value("video", "flashlight_shadows", flashlight_shadows)
 	cfg.set_value("video", "msaa", msaa)
+	cfg.set_value("video", "quality", quality)
+	cfg.set_value("touch", "scale", touch_scale)
 	cfg.save(PATH)
 
 func apply(viewport: Viewport) -> void:
